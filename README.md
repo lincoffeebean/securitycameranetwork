@@ -95,3 +95,5 @@ The current MVP only streams live JPEG frames through FastAPI WebSockets. It doe
 5. Confirm the live feed appears.
 
 Some mobile browsers may block camera access on plain HTTP over a LAN. If camera permission fails on `http://192.168.1.199`, HTTPS may be required later through Tailscale, a local certificate, or another secure setup.
+
+If the camera page says `Camera access is not available in this browser context`, the browser is blocking `getUserMedia`. This usually happens on a phone when using plain HTTP with a LAN IP address. Try the page from `http://127.0.0.1:8000` on the same machine as the server, or use HTTPS for phone testing.

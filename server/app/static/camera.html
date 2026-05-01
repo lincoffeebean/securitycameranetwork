@@ -160,6 +160,10 @@
         setStatus("Requesting camera permission...");
 
         try {
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw new Error("Camera access is not available in this browser context. Use HTTPS, localhost, or a browser that supports getUserMedia.");
+          }
+
           const stream = await navigator.mediaDevices.getUserMedia({
             video: {
               facingMode: { ideal: "environment" },
