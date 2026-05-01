@@ -88,7 +88,7 @@
         border: 1px solid #34404d;
         border-radius: 8px;
         background: #06090c;
-        object-fit: cover;
+        object-fit: contain;
       }
 
       canvas {
@@ -133,6 +133,27 @@
         return `${protocol}//${window.location.host}/ws/camera/${encodeURIComponent(cameraId)}`;
       }
 
+      async function zoomAllTheWayOut(stream) {
+        const [track] = stream.getVideoTracks();
+
+        if (!track || !track.getCapabilities || !track.applyConstraints) {
+          return;
+        }
+
+        const capabilities = track.getCapabilities();
+        if (!capabilities.zoom || typeof capabilities.zoom.min !== "number") {
+          return;
+        }
+
+        try {
+          await track.applyConstraints({
+            advanced: [{ zoom: capabilities.zoom.min }]
+          });
+        } catch (error) {
+          console.warn("Minimum zoom is not supported by this camera.", error);
+        }
+      }
+
       function sendFrame() {
         if (!socket || socket.readyState !== WebSocket.OPEN) {
           return;
@@ -173,6 +194,7 @@
             audio: false
           });
 
+          await zoomAllTheWayOut(stream);
           preview.srcObject = stream;
           setStatus("Connecting...");
 
