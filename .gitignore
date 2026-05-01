@@ -12,6 +12,7 @@ ENV/
 # Environment files
 .env
 .env.*
+server/app/static/caddy-root.crt
 
 # Video files
 *.mp4
