@@ -47,6 +47,7 @@
       }
 
       input,
+      select,
       button {
         width: 100%;
         min-height: 52px;
@@ -54,11 +55,29 @@
         font: inherit;
       }
 
-      input {
+      input,
+      select {
         border: 1px solid #34404d;
         background: #151c23;
         color: #f5f7fa;
         padding: 0 14px;
+      }
+
+      input[type="range"] {
+        padding: 0;
+      }
+
+      .controls {
+        display: grid;
+        gap: 14px;
+        margin-top: 14px;
+      }
+
+      .quality-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
       }
 
       button {
@@ -106,6 +125,34 @@
         <input id="cameraId" type="text" value="phone-camera" autocomplete="off" autocapitalize="none" spellcheck="false">
       </label>
 
+      <div class="controls">
+        <label for="fpsSelect">
+          FPS
+          <select id="fpsSelect">
+            <option value="5">5 FPS</option>
+            <option value="10">10 FPS</option>
+            <option value="15">15 FPS</option>
+            <option value="30">30 FPS</option>
+          </select>
+        </label>
+
+        <label for="qualityRange">
+          <span class="quality-heading">
+            <span>JPEG Quality</span>
+            <span id="qualityValue">0.65</span>
+          </span>
+          <input id="qualityRange" type="range" min="0.45" max="0.95" step="0.05" value="0.65">
+        </label>
+
+        <label for="resolutionSelect">
+          Resolution
+          <select id="resolutionSelect">
+            <option value="720">720p</option>
+            <option value="1080">1080p</option>
+          </select>
+        </label>
+      </div>
+
       <button id="startButton" type="button">Start Camera</button>
       <p id="status">Idle</p>
 
@@ -115,6 +162,10 @@
 
     <script>
       const cameraIdInput = document.getElementById("cameraId");
+      const fpsSelect = document.getElementById("fpsSelect");
+      const qualityRange = document.getElementById("qualityRange");
+      const qualityValue = document.getElementById("qualityValue");
+      const resolutionSelect = document.getElementById("resolutionSelect");
       const startButton = document.getElementById("startButton");
       const statusText = document.getElementById("status");
       const preview = document.getElementById("preview");
@@ -131,6 +182,24 @@
       function websocketUrl(cameraId) {
         const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
         return `${protocol}//${window.location.host}/ws/camera/${encodeURIComponent(cameraId)}`;
+      }
+
+      function selectedFps() {
+        return Number.parseInt(fpsSelect.value, 10);
+      }
+
+      function selectedQuality() {
+        return Number.parseFloat(qualityRange.value);
+      }
+
+      function selectedResolution() {
+        return resolutionSelect.value === "1080"
+          ? { width: 1920, height: 1080 }
+          : { width: 1280, height: 720 };
+      }
+
+      function updateQualityValue() {
+        qualityValue.textContent = selectedQuality().toFixed(2);
       }
 
       async function zoomAllTheWayOut(stream) {
@@ -163,11 +232,15 @@
           return;
         }
 
+        if (socket.bufferedAmount > 4 * 1024 * 1024) {
+          return;
+        }
+
         captureCanvas.width = preview.videoWidth;
         captureCanvas.height = preview.videoHeight;
         captureContext.drawImage(preview, 0, 0, captureCanvas.width, captureCanvas.height);
 
-        const frame = captureCanvas.toDataURL("image/jpeg", 0.65);
+        const frame = captureCanvas.toDataURL("image/jpeg", selectedQuality());
         socket.send(JSON.stringify({
           frame,
           timestamp: new Date().toISOString()
@@ -181,6 +254,9 @@
         setStatus("Requesting camera permission...");
 
         try {
+          const fps = selectedFps();
+          const resolution = selectedResolution();
+
           if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             throw new Error("Camera access is not available in this browser context. Use HTTPS, localhost, or a browser that supports getUserMedia.");
           }
@@ -188,8 +264,9 @@
           const stream = await navigator.mediaDevices.getUserMedia({
             video: {
               facingMode: { ideal: "environment" },
-              width: { ideal: 1280 },
-              height: { ideal: 720 }
+              width: { ideal: resolution.width },
+              height: { ideal: resolution.height },
+              frameRate: { ideal: fps }
             },
             audio: false
           });
@@ -201,9 +278,9 @@
           socket = new WebSocket(websocketUrl(cameraId));
 
           socket.addEventListener("open", () => {
-            setStatus(`Streaming as ${cameraId}`);
+            setStatus(`Streaming as ${cameraId} at ${fps} FPS`);
             clearInterval(captureTimer);
-            captureTimer = setInterval(sendFrame, 200);
+            captureTimer = setInterval(sendFrame, Math.round(1000 / fps));
           });
 
           socket.addEventListener("close", () => {
@@ -222,6 +299,8 @@
         }
       }
 
+      qualityRange.addEventListener("input", updateQualityValue);
+      updateQualityValue();
       startButton.addEventListener("click", startCamera);
     </script>
   </body>

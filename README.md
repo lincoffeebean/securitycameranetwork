@@ -10,6 +10,8 @@ This project is a DIY security camera network prototype.
 
 The current MVP only streams live JPEG frames through FastAPI WebSockets. It does not save video, record audio, use a database, or require authentication.
 
+Camera Mode includes simple controls for FPS, JPEG quality, and capture resolution. Higher settings can look better, but they also use more phone CPU and LAN bandwidth.
+
 ## Windows Local Testing
 
 1. Go into the server folder:
