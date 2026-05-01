@@ -2,54 +2,96 @@
 
 ## Project Goal
 
-This project is the starting point for a DIY security camera network.
+This project is a DIY security camera network prototype.
 
 - Phones will eventually record and upload video chunks.
 - A Linux server will store recordings.
 - A web dashboard will eventually view cameras and clips.
 
-For now, the project only includes a minimal FastAPI backend health check.
+The current MVP only streams live JPEG frames through FastAPI WebSockets. It does not save video, record audio, use a database, or require authentication.
 
-## Run the Backend on Windows PowerShell
+## Windows Local Testing
 
-1. Open the repo in VS Code:
-
-   ```powershell
-   code .
-   ```
-
-2. Go into the server folder:
+1. Go into the server folder:
 
    ```powershell
    cd server
    ```
 
-3. Create a virtual environment:
-
-   ```powershell
-   python -m venv .venv
-   ```
-
-4. Activate it:
+2. Activate the virtual environment:
 
    ```powershell
    .venv\Scripts\Activate.ps1
    ```
 
-5. Install dependencies:
+3. Install dependencies:
 
    ```powershell
    pip install -r requirements.txt
    ```
 
-6. Run the dev server:
+4. Run the dev server:
 
    ```powershell
    uvicorn app.main:app --reload
    ```
 
-7. Open:
+5. Open:
 
    ```text
    http://127.0.0.1:8000
    ```
+
+## Ubuntu Server Testing
+
+1. Go into the repo:
+
+   ```bash
+   cd ~/securitycameranetwork
+   ```
+
+2. Pull the latest code:
+
+   ```bash
+   git pull
+   ```
+
+3. Go into the server folder:
+
+   ```bash
+   cd server
+   ```
+
+4. Activate the virtual environment:
+
+   ```bash
+   source .venv/bin/activate
+   ```
+
+5. Install dependencies:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+6. Run the server on the LAN:
+
+   ```bash
+   uvicorn app.main:app --host 0.0.0.0 --port 8000
+   ```
+
+7. Open this address on a phone or laptop:
+
+   ```text
+   http://192.168.1.199:8000
+   ```
+
+## Testing Flow
+
+1. Open `http://192.168.1.199:8000/camera` on a phone.
+2. Enter a camera ID like `front-door`.
+3. Tap Start Camera.
+4. Open `http://192.168.1.199:8000/viewer` on another device.
+5. Confirm the live feed appears.
+
+Some mobile browsers may block camera access on plain HTTP over a LAN. If camera permission fails on `http://192.168.1.199`, HTTPS may be required later through Tailscale, a local certificate, or another secure setup.

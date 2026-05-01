@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Security Camera Network</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Arial, Helvetica, sans-serif;
+        background: #101418;
+        color: #f5f7fa;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background: #101418;
+      }
+
+      main {
+        width: min(92vw, 520px);
+        padding: 28px 0;
+      }
+
+      h1 {
+        margin: 0 0 28px;
+        font-size: clamp(2rem, 8vw, 3.25rem);
+        line-height: 1.05;
+      }
+
+      .actions {
+        display: grid;
+        gap: 16px;
+      }
+
+      a {
+        display: flex;
+        min-height: 96px;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid #34404d;
+        border-radius: 8px;
+        background: #1b232c;
+        color: #f5f7fa;
+        font-size: 1.35rem;
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      a:focus,
+      a:hover {
+        border-color: #5ec4ff;
+        background: #223140;
+        outline: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Security Camera Network</h1>
+      <nav class="actions" aria-label="Mode selection">
+        <a href="/viewer">View Mode</a>
+        <a href="/camera">Camera Mode</a>
+      </nav>
+    </main>
+  </body>
+</html>

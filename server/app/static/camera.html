@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Camera Mode</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Arial, Helvetica, sans-serif;
+        background: #101418;
+        color: #f5f7fa;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        background: #101418;
+      }
+
+      main {
+        width: min(94vw, 760px);
+        margin: 0 auto;
+        padding: 20px 0 32px;
+      }
+
+      a {
+        color: #5ec4ff;
+        text-decoration: none;
+      }
+
+      h1 {
+        margin: 22px 0;
+        font-size: clamp(2rem, 8vw, 3rem);
+        line-height: 1.05;
+      }
+
+      label {
+        display: grid;
+        gap: 8px;
+        color: #c7d1dc;
+        font-weight: 700;
+      }
+
+      input,
+      button {
+        width: 100%;
+        min-height: 52px;
+        border-radius: 8px;
+        font: inherit;
+      }
+
+      input {
+        border: 1px solid #34404d;
+        background: #151c23;
+        color: #f5f7fa;
+        padding: 0 14px;
+      }
+
+      button {
+        margin-top: 14px;
+        border: 0;
+        background: #5ec4ff;
+        color: #071018;
+        cursor: pointer;
+        font-weight: 800;
+      }
+
+      button:disabled {
+        cursor: wait;
+        opacity: 0.65;
+      }
+
+      #status {
+        min-height: 24px;
+        margin: 16px 0;
+        color: #c7d1dc;
+      }
+
+      video {
+        display: block;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        border: 1px solid #34404d;
+        border-radius: 8px;
+        background: #06090c;
+        object-fit: cover;
+      }
+
+      canvas {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a href="/">Back</a>
+      <h1>Camera Mode</h1>
+
+      <label for="cameraId">
+        Camera ID
+        <input id="cameraId" type="text" value="phone-camera" autocomplete="off" autocapitalize="none" spellcheck="false">
+      </label>
+
+      <button id="startButton" type="button">Start Camera</button>
+      <p id="status">Idle</p>
+
+      <video id="preview" autoplay muted playsinline></video>
+      <canvas id="captureCanvas"></canvas>
+    </main>
+
+    <script>
+      const cameraIdInput = document.getElementById("cameraId");
+      const startButton = document.getElementById("startButton");
+      const statusText = document.getElementById("status");
+      const preview = document.getElementById("preview");
+      const captureCanvas = document.getElementById("captureCanvas");
+      const captureContext = captureCanvas.getContext("2d");
+
+      let socket = null;
+      let captureTimer = null;
+
+      function setStatus(message) {
+        statusText.textContent = message;
+      }
+
+      function websocketUrl(cameraId) {
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        return `${protocol}//${window.location.host}/ws/camera/${encodeURIComponent(cameraId)}`;
+      }
+
+      function sendFrame() {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          return;
+        }
+
+        if (!preview.videoWidth || !preview.videoHeight) {
+          return;
+        }
+
+        captureCanvas.width = preview.videoWidth;
+        captureCanvas.height = preview.videoHeight;
+        captureContext.drawImage(preview, 0, 0, captureCanvas.width, captureCanvas.height);
+
+        const frame = captureCanvas.toDataURL("image/jpeg", 0.65);
+        socket.send(JSON.stringify({
+          frame,
+          timestamp: new Date().toISOString()
+        }));
+      }
+
+      async function startCamera() {
+        const cameraId = cameraIdInput.value.trim() || "phone-camera";
+        cameraIdInput.value = cameraId;
+        startButton.disabled = true;
+        setStatus("Requesting camera permission...");
+
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: { ideal: "environment" },
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
+            },
+            audio: false
+          });
+
+          preview.srcObject = stream;
+          setStatus("Connecting...");
+
+          socket = new WebSocket(websocketUrl(cameraId));
+
+          socket.addEventListener("open", () => {
+            setStatus(`Streaming as ${cameraId}`);
+            clearInterval(captureTimer);
+            captureTimer = setInterval(sendFrame, 200);
+          });
+
+          socket.addEventListener("close", () => {
+            clearInterval(captureTimer);
+            captureTimer = null;
+            setStatus("Disconnected");
+            startButton.disabled = false;
+          });
+
+          socket.addEventListener("error", () => {
+            setStatus("Connection error");
+          });
+        } catch (error) {
+          setStatus(`Camera failed: ${error.message}`);
+          startButton.disabled = false;
+        }
+      }
+
+      startButton.addEventListener("click", startCamera);
+    </script>
+  </body>
+</html>

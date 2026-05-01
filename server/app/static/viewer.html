@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>View Mode</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Arial, Helvetica, sans-serif;
+        background: #101418;
+        color: #f5f7fa;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        background: #101418;
+      }
+
+      main {
+        width: min(94vw, 1180px);
+        margin: 0 auto;
+        padding: 20px 0 36px;
+      }
+
+      a {
+        color: #5ec4ff;
+        text-decoration: none;
+      }
+
+      h1 {
+        margin: 22px 0 12px;
+        font-size: clamp(2rem, 8vw, 3rem);
+        line-height: 1.05;
+      }
+
+      #status,
+      #emptyState,
+      .timestamp {
+        color: #c7d1dc;
+      }
+
+      #status {
+        min-height: 24px;
+        margin: 0 0 18px;
+      }
+
+      #grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+        gap: 16px;
+      }
+
+      .camera-card {
+        overflow: hidden;
+        border: 1px solid #34404d;
+        border-radius: 8px;
+        background: #151c23;
+      }
+
+      .camera-card img {
+        display: block;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        background: #06090c;
+        object-fit: cover;
+      }
+
+      .camera-info {
+        display: grid;
+        gap: 6px;
+        padding: 12px;
+      }
+
+      .camera-title {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .camera-id {
+        overflow-wrap: anywhere;
+        font-size: 1.05rem;
+        font-weight: 800;
+      }
+
+      .badge {
+        flex: 0 0 auto;
+        border-radius: 999px;
+        padding: 4px 9px;
+        background: #2d7f55;
+        color: #f5f7fa;
+        font-size: 0.8rem;
+        font-weight: 800;
+      }
+
+      .badge.disconnected {
+        background: #7b3a37;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a href="/">Back</a>
+      <h1>View Mode</h1>
+      <p id="status">Connecting...</p>
+      <p id="emptyState">No cameras connected yet.</p>
+      <section id="grid" aria-live="polite"></section>
+    </main>
+
+    <script>
+      const statusText = document.getElementById("status");
+      const emptyState = document.getElementById("emptyState");
+      const grid = document.getElementById("grid");
+      const cameras = new Map();
+
+      let socket = null;
+      let pingTimer = null;
+      let reconnectTimer = null;
+
+      function websocketUrl() {
+        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        return `${protocol}//${window.location.host}/ws/viewer`;
+      }
+
+      function updateEmptyState() {
+        emptyState.style.display = cameras.size === 0 ? "block" : "none";
+      }
+
+      function createCameraCard(cameraId) {
+        const card = document.createElement("article");
+        card.className = "camera-card";
+        card.dataset.cameraId = cameraId;
+
+        const image = document.createElement("img");
+        image.alt = `${cameraId} live frame`;
+
+        const info = document.createElement("div");
+        info.className = "camera-info";
+
+        const title = document.createElement("div");
+        title.className = "camera-title";
+
+        const id = document.createElement("div");
+        id.className = "camera-id";
+        id.textContent = cameraId;
+
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = "Live";
+
+        const timestamp = document.createElement("div");
+        timestamp.className = "timestamp";
+        timestamp.textContent = "Waiting for frame";
+
+        title.append(id, badge);
+        info.append(title, timestamp);
+        card.append(image, info);
+        grid.append(card);
+
+        const camera = { card, image, badge, timestamp };
+        cameras.set(cameraId, camera);
+        updateEmptyState();
+        return camera;
+      }
+
+      function updateFrame(message) {
+        const camera = cameras.get(message.camera_id) || createCameraCard(message.camera_id);
+        camera.image.src = message.frame;
+        camera.timestamp.textContent = message.timestamp;
+        camera.badge.textContent = "Live";
+        camera.badge.classList.remove("disconnected");
+      }
+
+      function updateCameraStatus(message) {
+        const camera = cameras.get(message.camera_id);
+        if (!camera) {
+          return;
+        }
+
+        camera.badge.textContent = "Disconnected";
+        camera.badge.classList.add("disconnected");
+      }
+
+      function connectViewer() {
+        clearTimeout(reconnectTimer);
+        socket = new WebSocket(websocketUrl());
+        statusText.textContent = "Connecting...";
+
+        socket.addEventListener("open", () => {
+          statusText.textContent = "Connected";
+          clearInterval(pingTimer);
+          pingTimer = setInterval(() => {
+            if (socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({ type: "ping", timestamp: new Date().toISOString() }));
+            }
+          }, 20000);
+        });
+
+        socket.addEventListener("message", (event) => {
+          const message = JSON.parse(event.data);
+
+          if (message.type === "frame") {
+            updateFrame(message);
+          }
+
+          if (message.type === "camera_status") {
+            updateCameraStatus(message);
+          }
+        });
+
+        socket.addEventListener("close", () => {
+          clearInterval(pingTimer);
+          statusText.textContent = "Disconnected. Reconnecting...";
+          reconnectTimer = setTimeout(connectViewer, 2000);
+        });
+
+        socket.addEventListener("error", () => {
+          statusText.textContent = "Connection error";
+          socket.close();
+        });
+      }
+
+      updateEmptyState();
+      connectViewer();
+    </script>
+  </body>
+</html>
