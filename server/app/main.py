@@ -42,6 +42,7 @@ recording_requests: dict[str, float] = {}
 SAFE_CAMERA_ID = re.compile(r"[^a-zA-Z0-9._-]+")
 MAX_RECENT_EVENTS = 30
 PERSON_DETECTOR = None
+UPPER_BODY_DETECTOR = None
 
 
 def default_camera_config() -> dict[str, Any]:
@@ -133,6 +134,22 @@ def get_person_detector():
     return PERSON_DETECTOR
 
 
+def get_upper_body_detector():
+    global UPPER_BODY_DETECTOR
+
+    if not detector_available():
+        return None
+
+    if UPPER_BODY_DETECTOR is None:
+        cascade_path = cv2.data.haarcascades + "haarcascade_upperbody.xml"
+        detector = cv2.CascadeClassifier(cascade_path)
+        if detector.empty():
+            return None
+        UPPER_BODY_DETECTOR = detector
+
+    return UPPER_BODY_DETECTOR
+
+
 def decode_data_url(frame_data_url: str):
     if not detector_available():
         return None
@@ -155,10 +172,6 @@ def detect_person(frame_data_url: str) -> bool:
     if image is None or not detector_available():
         return False
 
-    detector = get_person_detector()
-    if detector is None:
-        return False
-
     # Downscale large frames before detection so 720p idle analysis stays light.
     max_width = 960
     if image.shape[1] > max_width:
@@ -169,13 +182,49 @@ def detect_person(frame_data_url: str) -> bool:
             interpolation=cv2.INTER_AREA,
         )
 
-    boxes, _weights = detector.detectMultiScale(
+    person_detector = get_person_detector()
+    upper_body_detector = get_upper_body_detector()
+    if person_detector is None and upper_body_detector is None:
+        return False
+
+    boxes = []
+    weights = []
+    if person_detector is not None:
+        boxes, weights = person_detector.detectMultiScale(
+            image,
+            winStride=(6, 6),
+            padding=(8, 8),
+            scale=1.03,
+        )
+
+    for weight in weights:
+        if float(weight) >= 0.15:
+            return True
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.equalizeHist(gray)
+
+    if upper_body_detector is None:
+        return len(boxes) > 0
+
+    upper_boxes = upper_body_detector.detectMultiScale(
+        gray,
+        scaleFactor=1.05,
+        minNeighbors=3,
+        minSize=(48, 48),
+    )
+
+    if len(upper_boxes) > 0:
+        return True
+
+    # Fall back to the broader person boxes when the detector is confident enough.
+    wide_boxes, wide_weights = person_detector.detectMultiScale(
         image,
         winStride=(8, 8),
         padding=(8, 8),
         scale=1.05,
     )
-    return len(boxes) > 0
+    return any(float(weight) >= 0.35 for weight in wide_weights)
 
 
 @app.get("/health")

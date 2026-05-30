@@ -211,6 +211,7 @@
         },
         currentProfileName: "idle",
         currentProfileKey: "",
+        preferredDeviceId: "",
         recording: false,
         started: false
       };
@@ -298,6 +299,61 @@
         }
       }
 
+      function rearCameraScore(device) {
+        const label = (device.label || "").toLowerCase();
+        if (!label) {
+          return 0;
+        }
+
+        let score = 0;
+        if (label.includes("back") || label.includes("rear") || label.includes("environment")) {
+          score += 8;
+        }
+        if (label.includes("ultra") || label.includes("0.5")) {
+          score += 10;
+        }
+        if (label.includes("wide")) {
+          score += 6;
+        }
+        if (label.includes("tele")) {
+          score -= 6;
+        }
+        if (label.includes("front") || label.includes("user")) {
+          score -= 12;
+        }
+
+        return score;
+      }
+
+      async function selectPreferredRearCameraDevice() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+          return "";
+        }
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoInputs = devices.filter((device) => device.kind === "videoinput");
+        if (videoInputs.length === 0) {
+          return "";
+        }
+
+        let bestDevice = null;
+        let bestScore = Number.NEGATIVE_INFINITY;
+
+        for (const device of videoInputs) {
+          const score = rearCameraScore(device);
+          if (score > bestScore) {
+            bestScore = score;
+            bestDevice = device;
+          }
+        }
+
+        if (bestDevice && bestScore > 0) {
+          return bestDevice.deviceId;
+        }
+
+        return "";
+      }
+
       async function ensureStreamForProfile(name, profile) {
         const nextKey = profileKey(name, profile);
         if (state.stream && state.currentProfileKey === nextKey) {
@@ -306,15 +362,38 @@
 
         await stopStream();
 
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: profile.width },
-            height: { ideal: profile.height },
-            frameRate: { ideal: profile.fps }
-          },
-          audio: false
-        });
+        const videoConstraints = {
+          facingMode: { ideal: "environment" },
+          width: { ideal: profile.width },
+          height: { ideal: profile.height },
+          frameRate: { ideal: profile.fps }
+        };
+
+        if (state.preferredDeviceId) {
+          videoConstraints.deviceId = { exact: state.preferredDeviceId };
+        }
+
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: videoConstraints,
+            audio: false
+          });
+        } catch (error) {
+          if (!state.preferredDeviceId) {
+            throw error;
+          }
+
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: { ideal: "environment" },
+              width: { ideal: profile.width },
+              height: { ideal: profile.height },
+              frameRate: { ideal: profile.fps }
+            },
+            audio: false
+          });
+        }
 
         await zoomAllTheWayOut(stream);
         preview.srcObject = stream;
@@ -573,6 +652,10 @@
 
           state.started = true;
           await ensureStreamForProfile("idle", idleProfile());
+          state.preferredDeviceId = await selectPreferredRearCameraDevice();
+          if (state.preferredDeviceId) {
+            await ensureStreamForProfile("idle", idleProfile());
+          }
           sendCameraState("streaming idle");
           if (!state.socket || state.socket.readyState > WebSocket.OPEN) {
             connectSocket();
