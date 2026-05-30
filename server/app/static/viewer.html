@@ -23,7 +23,7 @@
       }
 
       main {
-        width: min(94vw, 1180px);
+        width: min(95vw, 1400px);
         margin: 0 auto;
         padding: 20px 0 36px;
       }
@@ -34,26 +34,42 @@
       }
 
       h1 {
-        margin: 22px 0 12px;
+        margin: 22px 0 10px;
         font-size: clamp(2rem, 8vw, 3rem);
         line-height: 1.05;
       }
 
-      #status,
-      #emptyState,
-      .timestamp {
+      p,
+      .timestamp,
+      .meta,
+      .event-time,
+      .event-copy {
         color: #c7d1dc;
+      }
+
+      .topline {
+        display: grid;
+        gap: 6px;
+        margin-bottom: 16px;
+      }
+
+      .panel {
+        border: 1px solid #34404d;
+        border-radius: 8px;
+        background: #151c23;
+        padding: 16px;
       }
 
       #status {
         min-height: 24px;
-        margin: 0 0 18px;
+        margin: 0;
       }
 
       #grid {
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
         gap: 16px;
+        margin-top: 16px;
       }
 
       .camera-card {
@@ -71,16 +87,16 @@
         object-fit: contain;
       }
 
-      .camera-info {
+      .camera-body {
         display: grid;
-        gap: 6px;
-        padding: 12px;
+        gap: 14px;
+        padding: 14px;
       }
 
       .camera-title {
         display: flex;
         min-width: 0;
-        align-items: center;
+        align-items: flex-start;
         justify-content: space-between;
         gap: 12px;
       }
@@ -89,6 +105,13 @@
         overflow-wrap: anywhere;
         font-size: 1.05rem;
         font-weight: 800;
+      }
+
+      .badges {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
       }
 
       .badge {
@@ -104,21 +127,219 @@
       .badge.disconnected {
         background: #7b3a37;
       }
+
+      .badge.recording {
+        background: #b1453f;
+      }
+
+      .badge.manual {
+        background: #4a6188;
+      }
+
+      .camera-meta {
+        display: grid;
+        gap: 4px;
+      }
+
+      .controls {
+        display: grid;
+        gap: 12px;
+      }
+
+      .control-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      label {
+        display: grid;
+        gap: 6px;
+        color: #c7d1dc;
+        font-size: 0.92rem;
+        font-weight: 700;
+      }
+
+      input,
+      select,
+      button {
+        width: 100%;
+        min-height: 44px;
+        border-radius: 8px;
+        font: inherit;
+      }
+
+      input,
+      select {
+        border: 1px solid #34404d;
+        background: #10161d;
+        color: #f5f7fa;
+        padding: 0 12px;
+      }
+
+      button {
+        border: 0;
+        background: #5ec4ff;
+        color: #071018;
+        cursor: pointer;
+        font-weight: 800;
+      }
+
+      button.secondary {
+        background: #2b3a48;
+        color: #f5f7fa;
+      }
+
+      .button-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .section-title {
+        margin: 0;
+        font-size: 0.95rem;
+        letter-spacing: 0;
+      }
+
+      #events {
+        display: grid;
+        gap: 10px;
+        margin-top: 16px;
+      }
+
+      .event {
+        border: 1px solid #34404d;
+        border-radius: 8px;
+        background: #151c23;
+        padding: 12px 14px;
+      }
+
+      .event a {
+        color: #8cd0ff;
+      }
+
+      @media (max-width: 720px) {
+        .control-grid,
+        .button-row {
+          grid-template-columns: 1fr;
+        }
+      }
     </style>
   </head>
   <body>
     <main>
       <a href="/">Back</a>
       <h1>View Mode</h1>
-      <p id="status">Connecting...</p>
-      <p id="emptyState">No cameras connected yet.</p>
+
+      <div class="topline panel">
+        <p id="status">Connecting...</p>
+        <p id="detectorStatus">Body detector status: checking</p>
+      </div>
+
       <section id="grid" aria-live="polite"></section>
+      <section id="events" aria-live="polite"></section>
     </main>
+
+    <template id="cameraCardTemplate">
+      <article class="camera-card">
+        <img alt="">
+        <div class="camera-body">
+          <div class="camera-title">
+            <div class="camera-id"></div>
+            <div class="badges">
+              <span class="badge connection-badge">Live</span>
+              <span class="badge mode-badge">Auto</span>
+            </div>
+          </div>
+
+          <div class="camera-meta">
+            <div class="timestamp">Waiting for frame</div>
+            <div class="meta state-line">State: pending</div>
+            <div class="meta clip-line">Last clip: none</div>
+          </div>
+
+          <div class="controls">
+            <div class="control-grid">
+              <label>
+                Control Mode
+                <select data-field="control_mode">
+                  <option value="automatic">Automatic</option>
+                  <option value="manual">Manual</option>
+                </select>
+              </label>
+
+              <label>
+                Manual Profile
+                <select data-field="manual_profile">
+                  <option value="idle">Idle</option>
+                  <option value="active">Active</option>
+                </select>
+              </label>
+
+              <label>
+                Idle Resolution
+                <select data-field="idle_resolution">
+                  <option value="1280x720">720p</option>
+                  <option value="1920x1080">1080p</option>
+                </select>
+              </label>
+
+              <label>
+                Idle FPS
+                <input data-field="idle_fps" type="number" min="1" max="30" step="1">
+              </label>
+
+              <label>
+                Idle JPEG
+                <input data-field="idle_quality" type="number" min="0.3" max="0.95" step="0.05">
+              </label>
+
+              <label>
+                Active Resolution
+                <select data-field="active_resolution">
+                  <option value="1280x720">720p</option>
+                  <option value="1920x1080">1080p</option>
+                </select>
+              </label>
+
+              <label>
+                Active FPS
+                <input data-field="active_fps" type="number" min="1" max="60" step="1">
+              </label>
+
+              <label>
+                Active JPEG
+                <input data-field="active_quality" type="number" min="0.3" max="0.95" step="0.05">
+              </label>
+
+              <label>
+                Clip Seconds
+                <input data-field="recording_duration_seconds" type="number" min="5" max="60" step="1">
+              </label>
+
+              <label>
+                Cooldown
+                <input data-field="cooldown_seconds" type="number" min="3" max="120" step="1">
+              </label>
+            </div>
+
+            <div class="button-row">
+              <button type="button" data-action="apply">Apply Settings</button>
+              <button type="button" class="secondary" data-action="record">Record 10s Now</button>
+            </div>
+          </div>
+        </div>
+      </article>
+    </template>
 
     <script>
       const statusText = document.getElementById("status");
-      const emptyState = document.getElementById("emptyState");
+      const detectorStatus = document.getElementById("detectorStatus");
       const grid = document.getElementById("grid");
+      const events = document.getElementById("events");
+      const template = document.getElementById("cameraCardTemplate");
+
       const cameras = new Map();
 
       let socket = null;
@@ -130,63 +351,282 @@
         return `${protocol}//${window.location.host}/ws/viewer`;
       }
 
-      function updateEmptyState() {
-        emptyState.style.display = cameras.size === 0 ? "block" : "none";
+      function defaultConfig() {
+        return {
+          control_mode: "automatic",
+          manual_profile: "idle",
+          idle: { width: 1280, height: 720, fps: 3, quality: 0.6 },
+          active: { width: 1920, height: 1080, fps: 30, quality: 0.85 },
+          recording_duration_seconds: 10,
+          cooldown_seconds: 12,
+          detection_enabled: true
+        };
       }
 
-      function createCameraCard(cameraId) {
-        const card = document.createElement("article");
-        card.className = "camera-card";
-        card.dataset.cameraId = cameraId;
+      function resolutionString(profile) {
+        return `${profile.width}x${profile.height}`;
+      }
 
-        const image = document.createElement("img");
+      function setResolution(select, width, height) {
+        const value = `${width}x${height}`;
+        if ([...select.options].some((option) => option.value === value)) {
+          select.value = value;
+        }
+      }
+
+      function parseResolution(value) {
+        const [width, height] = value.split("x").map((item) => Number.parseInt(item, 10));
+        return { width, height };
+      }
+
+      function formatTimestamp(value) {
+        if (!value) {
+          return "Waiting for frame";
+        }
+
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+      }
+
+      function ensureCamera(cameraId) {
+        if (cameras.has(cameraId)) {
+          return cameras.get(cameraId);
+        }
+
+        const fragment = template.content.cloneNode(true);
+        const card = fragment.querySelector(".camera-card");
+        const image = fragment.querySelector("img");
+        const id = fragment.querySelector(".camera-id");
+        const connectionBadge = fragment.querySelector(".connection-badge");
+        const modeBadge = fragment.querySelector(".mode-badge");
+        const timestamp = fragment.querySelector(".timestamp");
+        const stateLine = fragment.querySelector(".state-line");
+        const clipLine = fragment.querySelector(".clip-line");
+        const form = {
+          controlMode: fragment.querySelector('[data-field="control_mode"]'),
+          manualProfile: fragment.querySelector('[data-field="manual_profile"]'),
+          idleResolution: fragment.querySelector('[data-field="idle_resolution"]'),
+          idleFps: fragment.querySelector('[data-field="idle_fps"]'),
+          idleQuality: fragment.querySelector('[data-field="idle_quality"]'),
+          activeResolution: fragment.querySelector('[data-field="active_resolution"]'),
+          activeFps: fragment.querySelector('[data-field="active_fps"]'),
+          activeQuality: fragment.querySelector('[data-field="active_quality"]'),
+          recordingDuration: fragment.querySelector('[data-field="recording_duration_seconds"]'),
+          cooldownSeconds: fragment.querySelector('[data-field="cooldown_seconds"]')
+        };
+
+        id.textContent = cameraId;
         image.alt = `${cameraId} live frame`;
 
-        const info = document.createElement("div");
-        info.className = "camera-info";
+        const camera = {
+          cameraId,
+          card,
+          image,
+          connectionBadge,
+          modeBadge,
+          timestamp,
+          stateLine,
+          clipLine,
+          form,
+          config: defaultConfig(),
+          state: {
+            connected: false,
+            current_profile: "idle",
+            recording: false,
+            status: "pending",
+            last_clip_path: null,
+            last_clip_at: null
+          }
+        };
 
-        const title = document.createElement("div");
-        title.className = "camera-title";
+        card.dataset.cameraId = cameraId;
+        card.querySelector('[data-action="apply"]').addEventListener("click", () => {
+          applyCameraConfig(cameraId);
+        });
+        card.querySelector('[data-action="record"]').addEventListener("click", () => {
+          triggerRecording(cameraId);
+        });
+        form.controlMode.addEventListener("change", () => {
+          syncManualVisibility(camera);
+        });
 
-        const id = document.createElement("div");
-        id.className = "camera-id";
-        id.textContent = cameraId;
-
-        const badge = document.createElement("span");
-        badge.className = "badge";
-        badge.textContent = "Live";
-
-        const timestamp = document.createElement("div");
-        timestamp.className = "timestamp";
-        timestamp.textContent = "Waiting for frame";
-
-        title.append(id, badge);
-        info.append(title, timestamp);
-        card.append(image, info);
-        grid.append(card);
-
-        const camera = { card, image, badge, timestamp };
+        grid.append(fragment);
         cameras.set(cameraId, camera);
-        updateEmptyState();
+        writeConfigToForm(camera);
+        syncManualVisibility(camera);
+        renderCamera(camera);
         return camera;
       }
 
+      function syncManualVisibility(camera) {
+        const manual = camera.form.controlMode.value === "manual";
+        camera.modeBadge.textContent = manual ? "Manual" : "Auto";
+        camera.modeBadge.classList.toggle("manual", manual);
+      }
+
+      function writeConfigToForm(camera) {
+        const { config, form } = camera;
+        form.controlMode.value = config.control_mode;
+        form.manualProfile.value = config.manual_profile;
+        setResolution(form.idleResolution, config.idle.width, config.idle.height);
+        form.idleFps.value = config.idle.fps;
+        form.idleQuality.value = Number(config.idle.quality).toFixed(2);
+        setResolution(form.activeResolution, config.active.width, config.active.height);
+        form.activeFps.value = config.active.fps;
+        form.activeQuality.value = Number(config.active.quality).toFixed(2);
+        form.recordingDuration.value = config.recording_duration_seconds;
+        form.cooldownSeconds.value = config.cooldown_seconds;
+      }
+
+      function readConfigFromForm(camera) {
+        const idleResolution = parseResolution(camera.form.idleResolution.value);
+        const activeResolution = parseResolution(camera.form.activeResolution.value);
+
+        return {
+          control_mode: camera.form.controlMode.value,
+          manual_profile: camera.form.manualProfile.value,
+          idle: {
+            width: idleResolution.width,
+            height: idleResolution.height,
+            fps: Number.parseInt(camera.form.idleFps.value, 10),
+            quality: Number.parseFloat(camera.form.idleQuality.value)
+          },
+          active: {
+            width: activeResolution.width,
+            height: activeResolution.height,
+            fps: Number.parseInt(camera.form.activeFps.value, 10),
+            quality: Number.parseFloat(camera.form.activeQuality.value)
+          },
+          recording_duration_seconds: Number.parseInt(camera.form.recordingDuration.value, 10),
+          cooldown_seconds: Number.parseInt(camera.form.cooldownSeconds.value, 10),
+          detection_enabled: camera.form.controlMode.value === "automatic"
+        };
+      }
+
+      function renderCamera(camera) {
+        camera.timestamp.textContent = formatTimestamp(camera.state.last_frame_at);
+        camera.stateLine.textContent = `State: ${camera.state.status} | Profile: ${camera.state.current_profile}`;
+        camera.clipLine.innerHTML = camera.state.last_clip_path
+          ? `Last clip: <a href="${camera.state.last_clip_path}" target="_blank" rel="noopener">${formatTimestamp(camera.state.last_clip_at)}</a>`
+          : "Last clip: none";
+
+        camera.connectionBadge.textContent = camera.state.recording
+          ? "Recording"
+          : (camera.state.connected ? "Live" : "Disconnected");
+        camera.connectionBadge.classList.toggle("recording", camera.state.recording);
+        camera.connectionBadge.classList.toggle("disconnected", !camera.state.connected);
+        syncManualVisibility(camera);
+      }
+
       function updateFrame(message) {
-        const camera = cameras.get(message.camera_id) || createCameraCard(message.camera_id);
+        const camera = ensureCamera(message.camera_id);
         camera.image.src = message.frame;
-        camera.timestamp.textContent = message.timestamp;
-        camera.badge.textContent = "Live";
-        camera.badge.classList.remove("disconnected");
+        camera.state.last_frame_at = message.timestamp;
+        camera.state.current_profile = message.profile || camera.state.current_profile;
+        renderCamera(camera);
+      }
+
+      function updateCameraConfig(cameraId, config) {
+        const camera = ensureCamera(cameraId);
+        camera.config = config;
+        writeConfigToForm(camera);
+        renderCamera(camera);
+      }
+
+      function updateCameraState(cameraId, nextState) {
+        const camera = ensureCamera(cameraId);
+        camera.state = { ...camera.state, ...nextState };
+        renderCamera(camera);
       }
 
       function updateCameraStatus(message) {
-        const camera = cameras.get(message.camera_id);
-        if (!camera) {
-          return;
+        updateCameraState(message.camera_id, {
+          connected: message.status === "connected",
+          recording: false,
+          status: message.status
+        });
+      }
+
+      function prependEvent(content) {
+        const event = document.createElement("article");
+        event.className = "event";
+        event.innerHTML = content;
+        events.prepend(event);
+
+        while (events.childElementCount > 12) {
+          events.removeChild(events.lastElementChild);
+        }
+      }
+
+      function renderEvent(message) {
+        if (message.type === "detection_event") {
+          prependEvent(`
+            <div class="event-copy"><strong>${message.camera_id}</strong> detected a human.</div>
+            <div class="event-time">${formatTimestamp(message.timestamp)}</div>
+          `);
         }
 
-        camera.badge.textContent = "Disconnected";
-        camera.badge.classList.add("disconnected");
+        if (message.type === "clip_saved") {
+          prependEvent(`
+            <div class="event-copy"><strong>${message.camera_id}</strong> saved a clip. <a href="${message.clip_path}" target="_blank" rel="noopener">Open recording</a></div>
+            <div class="event-time">${formatTimestamp(message.timestamp)}</div>
+          `);
+        }
+
+        if (message.type === "recording_failed") {
+          prependEvent(`
+            <div class="event-copy"><strong>${message.camera_id}</strong> failed to record: ${message.message}</div>
+            <div class="event-time">${formatTimestamp(message.timestamp)}</div>
+          `);
+        }
+      }
+
+      function applySnapshot(message) {
+        detectorStatus.textContent = message.detector_available
+          ? "Body detector status: ready"
+          : "Body detector status: unavailable until OpenCV is installed";
+
+        for (const item of message.configs || []) {
+          updateCameraConfig(item.camera_id, item.config);
+        }
+
+        for (const item of message.states || []) {
+          updateCameraState(item.camera_id, item);
+        }
+
+        for (const frame of message.frames || []) {
+          updateFrame(frame);
+        }
+
+        for (const event of message.events || []) {
+          renderEvent(event);
+        }
+      }
+
+      function sendJson(payload) {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          return;
+        }
+        socket.send(JSON.stringify(payload));
+      }
+
+      function applyCameraConfig(cameraId) {
+        const camera = ensureCamera(cameraId);
+        const config = readConfigFromForm(camera);
+        camera.config = config;
+        renderCamera(camera);
+        sendJson({
+          type: "set_config",
+          camera_id: cameraId,
+          config
+        });
+      }
+
+      function triggerRecording(cameraId) {
+        sendJson({
+          type: "trigger_recording",
+          camera_id: cameraId
+        });
       }
 
       function connectViewer() {
@@ -207,12 +647,28 @@
         socket.addEventListener("message", (event) => {
           const message = JSON.parse(event.data);
 
+          if (message.type === "snapshot") {
+            applySnapshot(message);
+          }
+
           if (message.type === "frame") {
             updateFrame(message);
           }
 
           if (message.type === "camera_status") {
             updateCameraStatus(message);
+          }
+
+          if (message.type === "camera_state") {
+            updateCameraState(message.camera_id, message.state);
+          }
+
+          if (message.type === "camera_config") {
+            updateCameraConfig(message.camera_id, message.config);
+          }
+
+          if (message.type === "detection_event" || message.type === "clip_saved" || message.type === "recording_failed") {
+            renderEvent(message);
           }
         });
 
@@ -228,7 +684,6 @@
         });
       }
 
-      updateEmptyState();
       connectViewer();
     </script>
   </body>

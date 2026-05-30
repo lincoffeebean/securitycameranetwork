@@ -23,7 +23,7 @@
       }
 
       main {
-        width: min(94vw, 760px);
+        width: min(94vw, 820px);
         margin: 0 auto;
         padding: 20px 0 32px;
       }
@@ -34,9 +34,28 @@
       }
 
       h1 {
-        margin: 22px 0;
+        margin: 22px 0 10px;
         font-size: clamp(2rem, 8vw, 3rem);
         line-height: 1.05;
+      }
+
+      .lede,
+      #status,
+      .profile-copy,
+      .meta {
+        color: #c7d1dc;
+      }
+
+      .lede {
+        margin: 0 0 18px;
+      }
+
+      .panel {
+        margin-top: 16px;
+        border: 1px solid #34404d;
+        border-radius: 8px;
+        background: #151c23;
+        padding: 16px;
       }
 
       label {
@@ -47,7 +66,6 @@
       }
 
       input,
-      select,
       button {
         width: 100%;
         min-height: 52px;
@@ -55,29 +73,11 @@
         font: inherit;
       }
 
-      input,
-      select {
+      input {
         border: 1px solid #34404d;
-        background: #151c23;
+        background: #10161d;
         color: #f5f7fa;
         padding: 0 14px;
-      }
-
-      input[type="range"] {
-        padding: 0;
-      }
-
-      .controls {
-        display: grid;
-        gap: 14px;
-        margin-top: 14px;
-      }
-
-      .quality-heading {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
       }
 
       button {
@@ -96,14 +96,39 @@
 
       #status {
         min-height: 24px;
-        margin: 16px 0;
-        color: #c7d1dc;
+        margin: 16px 0 0;
+      }
+
+      .profiles {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }
+
+      .profile-card {
+        border: 1px solid #34404d;
+        border-radius: 8px;
+        background: #10161d;
+        padding: 14px;
+      }
+
+      .profile-card strong,
+      .mode strong {
+        display: block;
+        margin-bottom: 6px;
+      }
+
+      .mode {
+        display: grid;
+        gap: 6px;
+        margin-top: 12px;
       }
 
       video {
         display: block;
         width: 100%;
         aspect-ratio: 16 / 9;
+        margin-top: 16px;
         border: 1px solid #34404d;
         border-radius: 8px;
         background: #06090c;
@@ -119,42 +144,36 @@
     <main>
       <a href="/">Back</a>
       <h1>Camera Mode</h1>
+      <p class="lede">Idle preview stays light for detection. The viewer can switch this phone into a 10-second full recording when a person is detected or manually triggered.</p>
 
-      <label for="cameraId">
-        Camera ID
-        <input id="cameraId" type="text" value="phone-camera" autocomplete="off" autocapitalize="none" spellcheck="false">
-      </label>
-
-      <div class="controls">
-        <label for="fpsSelect">
-          FPS
-          <select id="fpsSelect">
-            <option value="5">5 FPS</option>
-            <option value="10">10 FPS</option>
-            <option value="15">15 FPS</option>
-            <option value="30">30 FPS</option>
-          </select>
+      <section class="panel">
+        <label for="cameraId">
+          Camera ID
+          <input id="cameraId" type="text" value="phone-camera" autocomplete="off" autocapitalize="none" spellcheck="false">
         </label>
 
-        <label for="qualityRange">
-          <span class="quality-heading">
-            <span>JPEG Quality</span>
-            <span id="qualityValue">0.65</span>
-          </span>
-          <input id="qualityRange" type="range" min="0.45" max="0.95" step="0.05" value="0.65">
-        </label>
+        <button id="startButton" type="button">Start Camera</button>
+        <p id="status">Idle</p>
 
-        <label for="resolutionSelect">
-          Resolution
-          <select id="resolutionSelect">
-            <option value="720">720p</option>
-            <option value="1080">1080p</option>
-          </select>
-        </label>
-      </div>
+        <div class="mode">
+          <strong>Remote Mode</strong>
+          <div id="modeSummary" class="meta">Waiting for viewer policy.</div>
+          <div id="profileSummary" class="meta">Current profile: not started</div>
+        </div>
+      </section>
 
-      <button id="startButton" type="button">Start Camera</button>
-      <p id="status">Idle</p>
+      <section class="panel">
+        <div class="profiles">
+          <article class="profile-card">
+            <strong>Idle Detection</strong>
+            <div id="idleSummary" class="profile-copy">1280x720, 3 FPS, JPEG 0.60</div>
+          </article>
+          <article class="profile-card">
+            <strong>Active Recording</strong>
+            <div id="activeSummary" class="profile-copy">1920x1080, 30 FPS, JPEG 0.85</div>
+          </article>
+        </div>
+      </section>
 
       <video id="preview" autoplay muted playsinline></video>
       <canvas id="captureCanvas"></canvas>
@@ -162,18 +181,39 @@
 
     <script>
       const cameraIdInput = document.getElementById("cameraId");
-      const fpsSelect = document.getElementById("fpsSelect");
-      const qualityRange = document.getElementById("qualityRange");
-      const qualityValue = document.getElementById("qualityValue");
-      const resolutionSelect = document.getElementById("resolutionSelect");
       const startButton = document.getElementById("startButton");
       const statusText = document.getElementById("status");
+      const modeSummary = document.getElementById("modeSummary");
+      const profileSummary = document.getElementById("profileSummary");
+      const idleSummary = document.getElementById("idleSummary");
+      const activeSummary = document.getElementById("activeSummary");
       const preview = document.getElementById("preview");
       const captureCanvas = document.getElementById("captureCanvas");
       const captureContext = captureCanvas.getContext("2d");
 
-      let socket = null;
-      let captureTimer = null;
+      const state = {
+        socket: null,
+        captureTimer: null,
+        reconnectTimer: null,
+        stream: null,
+        mediaRecorder: null,
+        recordingChunks: [],
+        recordingStopTimer: null,
+        recordingStartedAt: null,
+        config: {
+          control_mode: "automatic",
+          manual_profile: "idle",
+          idle: { width: 1280, height: 720, fps: 3, quality: 0.6 },
+          active: { width: 1920, height: 1080, fps: 30, quality: 0.85 },
+          recording_duration_seconds: 10,
+          cooldown_seconds: 12,
+          detection_enabled: true
+        },
+        currentProfileName: "idle",
+        currentProfileKey: "",
+        recording: false,
+        started: false
+      };
 
       function setStatus(message) {
         statusText.textContent = message;
@@ -184,27 +224,64 @@
         return `${protocol}//${window.location.host}/ws/camera/${encodeURIComponent(cameraId)}`;
       }
 
-      function selectedFps() {
-        return Number.parseInt(fpsSelect.value, 10);
+      function summarizeProfile(profile) {
+        return `${profile.width}x${profile.height}, ${profile.fps} FPS, JPEG ${Number(profile.quality).toFixed(2)}`;
       }
 
-      function selectedQuality() {
-        return Number.parseFloat(qualityRange.value);
+      function updateConfigSummaries() {
+        idleSummary.textContent = summarizeProfile(state.config.idle);
+        activeSummary.textContent = summarizeProfile(state.config.active);
+        const modeCopy = state.config.control_mode === "automatic"
+          ? `Automatic: idle detection with human-triggered ${state.config.recording_duration_seconds}s recordings`
+          : `Manual: locked to ${state.config.manual_profile} profile from viewer`;
+        modeSummary.textContent = modeCopy;
+        profileSummary.textContent = `Current profile: ${state.currentProfileName}${state.recording ? " recording" : ""}`;
       }
 
-      function selectedResolution() {
-        return resolutionSelect.value === "1080"
-          ? { width: 1920, height: 1080 }
-          : { width: 1280, height: 720 };
+      function activeProfile() {
+        return state.config.active;
       }
 
-      function updateQualityValue() {
-        qualityValue.textContent = selectedQuality().toFixed(2);
+      function idleProfile() {
+        return state.config.idle;
+      }
+
+      function desiredProfileName() {
+        if (state.recording) {
+          return "active";
+        }
+
+        if (state.config.control_mode === "manual") {
+          return state.config.manual_profile === "active" ? "active" : "idle";
+        }
+
+        return "idle";
+      }
+
+      function desiredProfile() {
+        return desiredProfileName() === "active" ? activeProfile() : idleProfile();
+      }
+
+      function profileKey(name, profile) {
+        return `${name}:${profile.width}:${profile.height}:${profile.fps}`;
+      }
+
+      async function stopStream() {
+        clearInterval(state.captureTimer);
+        state.captureTimer = null;
+
+        if (state.stream) {
+          for (const track of state.stream.getTracks()) {
+            track.stop();
+          }
+        }
+
+        state.stream = null;
+        preview.srcObject = null;
       }
 
       async function zoomAllTheWayOut(stream) {
         const [track] = stream.getVideoTracks();
-
         if (!track || !track.getCapabilities || !track.applyConstraints) {
           return;
         }
@@ -215,16 +292,65 @@
         }
 
         try {
-          await track.applyConstraints({
-            advanced: [{ zoom: capabilities.zoom.min }]
-          });
+          await track.applyConstraints({ advanced: [{ zoom: capabilities.zoom.min }] });
         } catch (error) {
           console.warn("Minimum zoom is not supported by this camera.", error);
         }
       }
 
+      async function ensureStreamForProfile(name, profile) {
+        const nextKey = profileKey(name, profile);
+        if (state.stream && state.currentProfileKey === nextKey) {
+          return;
+        }
+
+        await stopStream();
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: profile.width },
+            height: { ideal: profile.height },
+            frameRate: { ideal: profile.fps }
+          },
+          audio: false
+        });
+
+        await zoomAllTheWayOut(stream);
+        preview.srcObject = stream;
+        state.stream = stream;
+        state.currentProfileName = name;
+        state.currentProfileKey = nextKey;
+        updateConfigSummaries();
+        startFrameLoop();
+      }
+
+      function frameQuality() {
+        return desiredProfileName() === "active"
+          ? Number(state.config.active.quality)
+          : Number(state.config.idle.quality);
+      }
+
+      function frameIntervalMs() {
+        const profile = desiredProfile();
+        return Math.max(150, Math.round(1000 / Math.max(1, Number(profile.fps))));
+      }
+
+      function sendCameraState(status) {
+        if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+          return;
+        }
+
+        state.socket.send(JSON.stringify({
+          type: "camera_state",
+          current_profile: state.currentProfileName,
+          recording: state.recording,
+          status
+        }));
+      }
+
       function sendFrame() {
-        if (!socket || socket.readyState !== WebSocket.OPEN) {
+        if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
           return;
         }
 
@@ -232,7 +358,7 @@
           return;
         }
 
-        if (socket.bufferedAmount > 4 * 1024 * 1024) {
+        if (state.socket.bufferedAmount > 4 * 1024 * 1024) {
           return;
         }
 
@@ -240,67 +366,225 @@
         captureCanvas.height = preview.videoHeight;
         captureContext.drawImage(preview, 0, 0, captureCanvas.width, captureCanvas.height);
 
-        const frame = captureCanvas.toDataURL("image/jpeg", selectedQuality());
-        socket.send(JSON.stringify({
-          frame,
-          timestamp: new Date().toISOString()
+        state.socket.send(JSON.stringify({
+          type: "frame",
+          frame: captureCanvas.toDataURL("image/jpeg", frameQuality()),
+          timestamp: new Date().toISOString(),
+          profile: state.currentProfileName
         }));
       }
 
-      async function startCamera() {
+      function startFrameLoop() {
+        clearInterval(state.captureTimer);
+        state.captureTimer = setInterval(sendFrame, frameIntervalMs());
+      }
+
+      async function applyRemotePolicy() {
+        await ensureStreamForProfile(desiredProfileName(), desiredProfile());
+        sendCameraState(state.recording ? "recording" : `streaming ${state.currentProfileName}`);
+      }
+
+      function pickRecorderMimeType() {
+        const candidates = [
+          "video/webm;codecs=vp9,opus",
+          "video/webm;codecs=vp8,opus",
+          "video/webm",
+          "video/mp4"
+        ];
+
+        for (const candidate of candidates) {
+          if (window.MediaRecorder && MediaRecorder.isTypeSupported(candidate)) {
+            return candidate;
+          }
+        }
+
+        return "";
+      }
+
+      async function blobToDataUrl(blob) {
+        return await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(reader.error || new Error("Clip read failed."));
+          reader.readAsDataURL(blob);
+        });
+      }
+
+      async function finishRecording() {
+        if (!state.mediaRecorder) {
+          return;
+        }
+
+        const recorder = state.mediaRecorder;
+        if (recorder.state !== "inactive") {
+          recorder.stop();
+        }
+      }
+
+      async function startRecordingFromServer(message) {
+        if (state.recording) {
+          return;
+        }
+
+        if (!window.MediaRecorder) {
+          throw new Error("This browser does not support MediaRecorder.");
+        }
+
+        state.recording = true;
+        setStatus(`Recording ${message.duration_seconds}s clip...`);
+        await ensureStreamForProfile("active", message.profile || activeProfile());
+        sendCameraState("recording");
+
+        const mimeType = pickRecorderMimeType();
+        const recorder = mimeType
+          ? new MediaRecorder(state.stream, { mimeType })
+          : new MediaRecorder(state.stream);
+
+        state.mediaRecorder = recorder;
+        state.recordingChunks = [];
+        state.recordingStartedAt = new Date().toISOString();
+
+        recorder.addEventListener("dataavailable", (event) => {
+          if (event.data && event.data.size > 0) {
+            state.recordingChunks.push(event.data);
+          }
+        });
+
+        recorder.addEventListener("stop", async () => {
+          clearTimeout(state.recordingStopTimer);
+          state.recordingStopTimer = null;
+
+          const blob = new Blob(state.recordingChunks, {
+            type: recorder.mimeType || "video/webm"
+          });
+          state.mediaRecorder = null;
+          state.recordingChunks = [];
+
+          try {
+            const dataUrl = await blobToDataUrl(blob);
+            if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+              state.socket.send(JSON.stringify({
+                type: "clip",
+                mime_type: blob.type || "video/webm",
+                data: dataUrl,
+                timestamp: new Date().toISOString(),
+                started_at: state.recordingStartedAt,
+                ended_at: new Date().toISOString()
+              }));
+            }
+          } catch (error) {
+            if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+              state.socket.send(JSON.stringify({
+                type: "recording_failed",
+                timestamp: new Date().toISOString(),
+                message: error.message
+              }));
+            }
+          }
+
+          state.recording = false;
+          state.recordingStartedAt = null;
+          await applyRemotePolicy();
+          setStatus("Idle detection active");
+        });
+
+        recorder.start();
+        state.recordingStopTimer = setTimeout(() => {
+          finishRecording();
+        }, Math.max(1000, Number(message.duration_seconds || state.config.recording_duration_seconds) * 1000));
+      }
+
+      async function handleSocketMessage(event) {
+        const message = JSON.parse(event.data);
+
+        if (message.type === "config") {
+          state.config = message.config || state.config;
+          updateConfigSummaries();
+          if (state.started && !state.recording) {
+            await applyRemotePolicy();
+          }
+        }
+
+        if (message.type === "start_recording") {
+          try {
+            await startRecordingFromServer(message);
+          } catch (error) {
+            state.recording = false;
+            state.recordingStartedAt = null;
+            setStatus(`Recording failed: ${error.message}`);
+            if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+              state.socket.send(JSON.stringify({
+                type: "recording_failed",
+                timestamp: new Date().toISOString(),
+                message: error.message
+              }));
+            }
+            await applyRemotePolicy();
+          }
+        }
+      }
+
+      function scheduleReconnect() {
+        clearTimeout(state.reconnectTimer);
+        state.reconnectTimer = setTimeout(() => {
+          connectSocket();
+        }, 2000);
+      }
+
+      function connectSocket() {
         const cameraId = cameraIdInput.value.trim() || "phone-camera";
         cameraIdInput.value = cameraId;
+
+        state.socket = new WebSocket(websocketUrl(cameraId));
+        setStatus("Connecting...");
+
+        state.socket.addEventListener("open", async () => {
+          setStatus("Connected");
+          if (!state.started) {
+            return;
+          }
+          await applyRemotePolicy();
+        });
+
+        state.socket.addEventListener("message", (event) => {
+          handleSocketMessage(event).catch((error) => {
+            setStatus(`Command failed: ${error.message}`);
+          });
+        });
+
+        state.socket.addEventListener("close", () => {
+          setStatus("Disconnected. Reconnecting...");
+          scheduleReconnect();
+        });
+
+        state.socket.addEventListener("error", () => {
+          setStatus("Connection error");
+        });
+      }
+
+      async function startCamera() {
         startButton.disabled = true;
         setStatus("Requesting camera permission...");
 
         try {
-          const fps = selectedFps();
-          const resolution = selectedResolution();
-
           if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
             throw new Error("Camera access is not available in this browser context. Use HTTPS, localhost, or a browser that supports getUserMedia.");
           }
 
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: {
-              facingMode: { ideal: "environment" },
-              width: { ideal: resolution.width },
-              height: { ideal: resolution.height },
-              frameRate: { ideal: fps }
-            },
-            audio: false
-          });
-
-          await zoomAllTheWayOut(stream);
-          preview.srcObject = stream;
-          setStatus("Connecting...");
-
-          socket = new WebSocket(websocketUrl(cameraId));
-
-          socket.addEventListener("open", () => {
-            setStatus(`Streaming as ${cameraId} at ${fps} FPS`);
-            clearInterval(captureTimer);
-            captureTimer = setInterval(sendFrame, Math.round(1000 / fps));
-          });
-
-          socket.addEventListener("close", () => {
-            clearInterval(captureTimer);
-            captureTimer = null;
-            setStatus("Disconnected");
-            startButton.disabled = false;
-          });
-
-          socket.addEventListener("error", () => {
-            setStatus("Connection error");
-          });
+          state.started = true;
+          await ensureStreamForProfile("idle", idleProfile());
+          sendCameraState("streaming idle");
+          if (!state.socket || state.socket.readyState > WebSocket.OPEN) {
+            connectSocket();
+          }
+          setStatus("Idle detection active");
         } catch (error) {
           setStatus(`Camera failed: ${error.message}`);
           startButton.disabled = false;
         }
       }
 
-      qualityRange.addEventListener("input", updateQualityValue);
-      updateQualityValue();
+      updateConfigSummaries();
       startButton.addEventListener("click", startCamera);
     </script>
   </body>
