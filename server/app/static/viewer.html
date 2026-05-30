@@ -494,7 +494,7 @@
           recording_duration_seconds: 10,
           cooldown_seconds: 12,
           detection_enabled: true,
-          detection_streak_threshold: 2
+          detection_streak_threshold: 3
         };
       }
 
@@ -643,7 +643,7 @@
         form.activeZoom.value = Number(config.active.zoom || 0.5).toFixed(1);
         form.recordingDuration.value = config.recording_duration_seconds;
         form.cooldownSeconds.value = config.cooldown_seconds;
-        form.detectionStreakThreshold.value = config.detection_streak_threshold || 2;
+        form.detectionStreakThreshold.value = config.detection_streak_threshold || 3;
       }
 
       function readConfigFromForm(camera) {

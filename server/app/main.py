@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import binascii
+import math
 import re
 import time
 from pathlib import Path
@@ -66,7 +67,7 @@ def default_camera_config() -> dict[str, Any]:
         "recording_duration_seconds": 10,
         "cooldown_seconds": 12,
         "detection_enabled": True,
-        "detection_streak_threshold": 2,
+        "detection_streak_threshold": 3,
     }
 
 
@@ -192,6 +193,7 @@ def detect_person(frame_data_url: str) -> bool:
     if person_detector is None and upper_body_detector is None:
         return False
 
+    frame_area = image.shape[0] * image.shape[1]
     boxes = []
     weights = []
     if person_detector is not None:
@@ -202,8 +204,15 @@ def detect_person(frame_data_url: str) -> bool:
             scale=1.03,
         )
 
-    for weight in weights:
-        if float(weight) >= 0.28:
+    for box, weight in zip(boxes, weights):
+        x, y, width, height = [int(value) for value in box]
+        area_ratio = (width * height) / max(1, frame_area)
+        aspect_ratio = width / max(1, height)
+        if (
+            float(weight) >= 0.42
+            and area_ratio >= 0.05
+            and 0.2 <= aspect_ratio <= 0.9
+        ):
             return True
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -215,12 +224,21 @@ def detect_person(frame_data_url: str) -> bool:
     upper_boxes = upper_body_detector.detectMultiScale(
         gray,
         scaleFactor=1.05,
-        minNeighbors=5,
-        minSize=(64, 64),
+        minNeighbors=7,
+        minSize=(96, 96),
     )
 
-    if len(upper_boxes) > 0:
-        return True
+    for x, y, width, height in upper_boxes:
+        area_ratio = (width * height) / max(1, frame_area)
+        aspect_ratio = width / max(1, height)
+        center_x = x + (width / 2)
+        horizontal_center_offset = abs(center_x - (image.shape[1] / 2)) / max(1, image.shape[1] / 2)
+        if (
+            area_ratio >= 0.08
+            and 0.25 <= aspect_ratio <= 1.2
+            and horizontal_center_offset <= 0.8
+        ):
+            return True
 
     # Fall back to the broader person boxes when the detector is confident enough.
     wide_boxes, wide_weights = person_detector.detectMultiScale(
@@ -229,7 +247,14 @@ def detect_person(frame_data_url: str) -> bool:
         padding=(8, 8),
         scale=1.05,
     )
-    return any(float(weight) >= 0.55 for weight in wide_weights)
+    for box, weight in zip(wide_boxes, wide_weights):
+        x, y, width, height = [int(value) for value in box]
+        area_ratio = (width * height) / max(1, frame_area)
+        diagonal = math.hypot(width, height)
+        if float(weight) >= 0.75 and area_ratio >= 0.09 and diagonal >= 180:
+            return True
+
+    return False
 
 
 @app.get("/health")
