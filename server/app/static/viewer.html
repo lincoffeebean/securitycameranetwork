@@ -175,6 +175,26 @@
         gap: 12px;
       }
 
+      .controls.is-collapsed {
+        display: none;
+      }
+
+      .controls-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        width: 100%;
+        min-height: 44px;
+        padding: 0 14px;
+      }
+
+      .controls-toggle .arrow {
+        flex: 0 0 auto;
+        font-size: 1rem;
+        line-height: 1;
+      }
+
       .control-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -310,7 +330,12 @@
             <div class="meta state-line">State: pending</div>
           </div>
 
-          <div class="controls">
+          <button type="button" class="secondary controls-toggle" data-action="toggle-controls" aria-expanded="false">
+            <span>Camera Settings</span>
+            <span class="arrow">▼</span>
+          </button>
+
+          <div class="controls is-collapsed">
             <div class="control-grid">
               <label>
                 Camera Name
@@ -541,6 +566,8 @@
         const profileBadge = fragment.querySelector(".profile-badge");
         const timestamp = fragment.querySelector(".timestamp");
         const stateLine = fragment.querySelector(".state-line");
+        const controls = fragment.querySelector(".controls");
+        const controlsToggle = fragment.querySelector('[data-action="toggle-controls"]');
         const form = {
           displayName: fragment.querySelector('[data-field="display_name"]'),
           controlMode: fragment.querySelector('[data-field="control_mode"]'),
@@ -579,6 +606,8 @@
           profileBadge,
           timestamp,
           stateLine,
+          controls,
+          controlsToggle,
           form,
           overlay,
           config: defaultConfig(),
@@ -607,6 +636,9 @@
         });
         card.querySelector('[data-action="disconnect"]').addEventListener("click", () => {
           disconnectCamera(cameraId);
+        });
+        controlsToggle.addEventListener("click", () => {
+          toggleCameraControls(cameraId);
         });
         card.querySelector('[data-action="rotate"]').addEventListener("click", () => {
           rotateCamera(cameraId);
@@ -699,6 +731,8 @@
         camera.card.querySelector(".camera-id").textContent = camera.state.display_name || camera.cameraId;
         camera.frameShell.style.setProperty("--rotation", `${camera.rotation}deg`);
         camera.frameShell.style.setProperty("--digital-zoom", `${camera.digitalZoom}`);
+        camera.controlsToggle.setAttribute("aria-expanded", String(!camera.controls.classList.contains("is-collapsed")));
+        camera.controlsToggle.querySelector(".arrow").textContent = camera.controls.classList.contains("is-collapsed") ? "▼" : "▲";
         syncManualVisibility(camera);
       }
 
@@ -960,6 +994,12 @@
         const camera = ensureCamera(cameraId);
         camera.digitalZoom = Math.min(4, Math.max(1, Number.parseFloat(value) || 1));
         camera.form.digitalZoom.value = camera.digitalZoom.toFixed(2).replace(/\.00$/, "");
+        renderCamera(camera);
+      }
+
+      function toggleCameraControls(cameraId) {
+        const camera = ensureCamera(cameraId);
+        camera.controls.classList.toggle("is-collapsed");
         renderCamera(camera);
       }
 
