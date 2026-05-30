@@ -79,12 +79,33 @@
         background: #151c23;
       }
 
-      .camera-card img {
-        display: block;
+      .frame-shell {
+        position: relative;
         width: 100%;
         aspect-ratio: 16 / 9;
         background: #06090c;
+        overflow: hidden;
+      }
+
+      .frame-visual {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        transform: rotate(var(--rotation, 0deg));
+        transform-origin: center center;
+      }
+
+      .camera-card img,
+      .overlay-canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
         object-fit: contain;
+      }
+
+      .overlay-canvas {
+        pointer-events: none;
       }
 
       .camera-body {
@@ -196,6 +217,30 @@
         gap: 10px;
       }
 
+      .overlay-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 44px;
+        padding: 0 12px;
+        border: 1px solid #34404d;
+        border-radius: 8px;
+        background: #10161d;
+        color: #f5f7fa;
+      }
+
+      .toggle input {
+        width: auto;
+        min-height: auto;
+        margin: 0;
+      }
+
       .section-title {
         margin: 0;
         font-size: 0.95rem;
@@ -221,7 +266,8 @@
 
       @media (max-width: 720px) {
         .control-grid,
-        .button-row {
+        .button-row,
+        .overlay-grid {
           grid-template-columns: 1fr;
         }
       }
@@ -243,7 +289,10 @@
 
     <template id="cameraCardTemplate">
       <article class="camera-card">
-        <img alt="">
+        <div class="frame-shell" style="--rotation: 0deg;">
+          <img class="frame-visual" alt="">
+          <canvas class="overlay-canvas frame-visual"></canvas>
+        </div>
         <div class="camera-body">
           <div class="camera-title">
             <div class="camera-id"></div>
@@ -328,11 +377,35 @@
               <button type="button" data-action="apply">Apply Settings</button>
               <button type="button" class="secondary" data-action="record">Record 10s Now</button>
             </div>
+
+            <div class="overlay-grid">
+              <label class="toggle">
+                <input data-overlay="enabled" type="checkbox" checked>
+                <span>Pose Overlay</span>
+              </label>
+              <button type="button" class="secondary" data-action="rotate">Rotate 90°</button>
+              <label class="toggle">
+                <input data-overlay="skeleton" type="checkbox" checked>
+                <span>Skeleton</span>
+              </label>
+              <label class="toggle">
+                <input data-overlay="keypoints" type="checkbox" checked>
+                <span>Keypoints</span>
+              </label>
+              <label class="toggle">
+                <input data-overlay="labels" type="checkbox">
+                <span>Labels</span>
+              </label>
+            </div>
           </div>
         </div>
       </article>
     </template>
 
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
     <script>
       const statusText = document.getElementById("status");
       const detectorStatus = document.getElementById("detectorStatus");
@@ -341,10 +414,49 @@
       const template = document.getElementById("cameraCardTemplate");
 
       const cameras = new Map();
+      const adjacentKeyPoints = [
+        ["left_shoulder", "right_shoulder"],
+        ["left_shoulder", "left_elbow"],
+        ["left_elbow", "left_wrist"],
+        ["right_shoulder", "right_elbow"],
+        ["right_elbow", "right_wrist"],
+        ["left_shoulder", "left_hip"],
+        ["right_shoulder", "right_hip"],
+        ["left_hip", "right_hip"],
+        ["left_hip", "left_knee"],
+        ["left_knee", "left_ankle"],
+        ["right_hip", "right_knee"],
+        ["right_knee", "right_ankle"]
+      ];
 
       let socket = null;
       let pingTimer = null;
       let reconnectTimer = null;
+      let poseDetector = null;
+      let poseDetectorReady = false;
+
+      async function initializePoseDetector() {
+        try {
+          if (!window.tf || !window.poseDetection) {
+            detectorStatus.textContent = "Body detector status: overlay model unavailable";
+            return;
+          }
+
+          await tf.setBackend("webgl");
+          await tf.ready();
+          poseDetector = await poseDetection.createDetector(
+            poseDetection.SupportedModels.MoveNet,
+            {
+              modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+              enableSmoothing: true
+            }
+          );
+          poseDetectorReady = true;
+          detectorStatus.textContent = "Body detector status: ready with pose overlay";
+        } catch (error) {
+          detectorStatus.textContent = `Body detector status: overlay unavailable (${error.message})`;
+        }
+      }
 
       function websocketUrl() {
         const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -395,7 +507,9 @@
 
         const fragment = template.content.cloneNode(true);
         const card = fragment.querySelector(".camera-card");
+        const frameShell = fragment.querySelector(".frame-shell");
         const image = fragment.querySelector("img");
+        const overlayCanvas = fragment.querySelector(".overlay-canvas");
         const id = fragment.querySelector(".camera-id");
         const connectionBadge = fragment.querySelector(".connection-badge");
         const modeBadge = fragment.querySelector(".mode-badge");
@@ -414,6 +528,12 @@
           recordingDuration: fragment.querySelector('[data-field="recording_duration_seconds"]'),
           cooldownSeconds: fragment.querySelector('[data-field="cooldown_seconds"]')
         };
+        const overlay = {
+          enabled: fragment.querySelector('[data-overlay="enabled"]'),
+          skeleton: fragment.querySelector('[data-overlay="skeleton"]'),
+          keypoints: fragment.querySelector('[data-overlay="keypoints"]'),
+          labels: fragment.querySelector('[data-overlay="labels"]')
+        };
 
         id.textContent = cameraId;
         image.alt = `${cameraId} live frame`;
@@ -421,14 +541,19 @@
         const camera = {
           cameraId,
           card,
+          frameShell,
           image,
+          overlayCanvas,
           connectionBadge,
           modeBadge,
           timestamp,
           stateLine,
           clipLine,
           form,
+          overlay,
           config: defaultConfig(),
+          rotation: 0,
+          poseBusy: false,
           state: {
             connected: false,
             current_profile: "idle",
@@ -446,9 +571,20 @@
         card.querySelector('[data-action="record"]').addEventListener("click", () => {
           triggerRecording(cameraId);
         });
+        card.querySelector('[data-action="rotate"]').addEventListener("click", () => {
+          rotateCamera(cameraId);
+        });
         form.controlMode.addEventListener("change", () => {
           syncManualVisibility(camera);
         });
+        image.addEventListener("load", () => {
+          schedulePoseRender(camera);
+        });
+        for (const input of Object.values(overlay)) {
+          input.addEventListener("change", () => {
+            schedulePoseRender(camera, true);
+          });
+        }
 
         grid.append(fragment);
         cameras.set(cameraId, camera);
@@ -515,7 +651,109 @@
           : (camera.state.connected ? "Live" : "Disconnected");
         camera.connectionBadge.classList.toggle("recording", camera.state.recording);
         camera.connectionBadge.classList.toggle("disconnected", !camera.state.connected);
+        camera.frameShell.style.setProperty("--rotation", `${camera.rotation}deg`);
         syncManualVisibility(camera);
+      }
+
+      function clearOverlay(camera) {
+        const context = camera.overlayCanvas.getContext("2d");
+        context.clearRect(0, 0, camera.overlayCanvas.width, camera.overlayCanvas.height);
+      }
+
+      function drawPose(camera, poses) {
+        const canvas = camera.overlayCanvas;
+        const context = canvas.getContext("2d");
+        const width = camera.image.naturalWidth || camera.image.width;
+        const height = camera.image.naturalHeight || camera.image.height;
+
+        if (!width || !height) {
+          return;
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        context.clearRect(0, 0, width, height);
+
+        if (!camera.overlay.enabled.checked || poses.length === 0) {
+          return;
+        }
+
+        context.lineWidth = 4;
+        context.strokeStyle = "#5ec4ff";
+        context.fillStyle = "#ffd166";
+        context.font = "16px Arial";
+
+        for (const pose of poses) {
+          const pointsByName = new Map();
+          for (const keypoint of pose.keypoints || []) {
+            if ((keypoint.score || 0) < 0.25) {
+              continue;
+            }
+            pointsByName.set(keypoint.name, keypoint);
+          }
+
+          if (camera.overlay.skeleton.checked) {
+            for (const [fromName, toName] of adjacentKeyPoints) {
+              const from = pointsByName.get(fromName);
+              const to = pointsByName.get(toName);
+              if (!from || !to) {
+                continue;
+              }
+              context.beginPath();
+              context.moveTo(from.x, from.y);
+              context.lineTo(to.x, to.y);
+              context.stroke();
+            }
+          }
+
+          if (camera.overlay.keypoints.checked) {
+            for (const keypoint of pointsByName.values()) {
+              context.beginPath();
+              context.arc(keypoint.x, keypoint.y, 5, 0, Math.PI * 2);
+              context.fill();
+              if (camera.overlay.labels.checked) {
+                context.fillText(keypoint.name, keypoint.x + 8, keypoint.y - 8);
+              }
+            }
+          }
+        }
+      }
+
+      async function schedulePoseRender(camera, immediate = false) {
+        if (!poseDetectorReady || !poseDetector || camera.poseBusy) {
+          if (immediate && !camera.overlay.enabled.checked) {
+            clearOverlay(camera);
+          }
+          return;
+        }
+
+        if (!camera.overlay.enabled.checked) {
+          clearOverlay(camera);
+          return;
+        }
+
+        camera.poseBusy = true;
+        const run = async () => {
+          try {
+            const poses = await poseDetector.estimatePoses(camera.image, {
+              flipHorizontal: false
+            });
+            drawPose(camera, poses);
+          } catch (error) {
+            clearOverlay(camera);
+          } finally {
+            camera.poseBusy = false;
+          }
+        };
+
+        if (immediate) {
+          await run();
+          return;
+        }
+
+        requestAnimationFrame(() => {
+          run();
+        });
       }
 
       function updateFrame(message) {
@@ -582,9 +820,13 @@
       }
 
       function applySnapshot(message) {
-        detectorStatus.textContent = message.detector_available
-          ? "Body detector status: ready"
-          : "Body detector status: unavailable until OpenCV is installed";
+        const serverStatus = message.detector_available
+          ? "server detection ready"
+          : "server detection unavailable until OpenCV is installed";
+        const overlayStatus = poseDetectorReady
+          ? "pose overlay ready"
+          : "pose overlay loading or unavailable";
+        detectorStatus.textContent = `Body detector status: ${serverStatus}; ${overlayStatus}`;
 
         for (const item of message.configs || []) {
           updateCameraConfig(item.camera_id, item.config);
@@ -627,6 +869,12 @@
           type: "trigger_recording",
           camera_id: cameraId
         });
+      }
+
+      function rotateCamera(cameraId) {
+        const camera = ensureCamera(cameraId);
+        camera.rotation = (camera.rotation + 90) % 360;
+        renderCamera(camera);
       }
 
       function connectViewer() {
@@ -684,6 +932,7 @@
         });
       }
 
+      initializePoseDetector();
       connectViewer();
     </script>
   </body>
