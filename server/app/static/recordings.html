@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Recordings</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Arial, Helvetica, sans-serif;
+        background: #101418;
+        color: #f5f7fa;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        background: #101418;
+      }
+
+      main {
+        width: min(95vw, 1200px);
+        margin: 0 auto;
+        padding: 20px 0 36px;
+      }
+
+      a {
+        color: #5ec4ff;
+        text-decoration: none;
+      }
+
+      h1 {
+        margin: 22px 0 10px;
+        font-size: clamp(2rem, 8vw, 3rem);
+        line-height: 1.05;
+      }
+
+      p,
+      .meta,
+      .empty-copy {
+        color: #c7d1dc;
+      }
+
+      .panel {
+        border: 1px solid #34404d;
+        border-radius: 8px;
+        background: #151c23;
+        padding: 16px;
+      }
+
+      .filters {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+        margin: 18px 0;
+      }
+
+      label {
+        display: grid;
+        gap: 6px;
+        color: #c7d1dc;
+        font-size: 0.92rem;
+        font-weight: 700;
+      }
+
+      input,
+      select,
+      button {
+        width: 100%;
+        min-height: 44px;
+        border-radius: 8px;
+        font: inherit;
+      }
+
+      input,
+      select {
+        border: 1px solid #34404d;
+        background: #10161d;
+        color: #f5f7fa;
+        padding: 0 12px;
+      }
+
+      button {
+        border: 0;
+        background: #5ec4ff;
+        color: #071018;
+        cursor: pointer;
+        font-weight: 800;
+      }
+
+      .summary {
+        margin-bottom: 14px;
+      }
+
+      .day-group {
+        margin-top: 18px;
+      }
+
+      .day-header {
+        margin: 0 0 10px;
+        font-size: 1.2rem;
+      }
+
+      .hour-group {
+        margin-top: 12px;
+        border: 1px solid #34404d;
+        border-radius: 8px;
+        background: #151c23;
+        overflow: hidden;
+      }
+
+      .hour-header {
+        padding: 12px 14px;
+        border-bottom: 1px solid #34404d;
+        background: #11181f;
+        font-weight: 800;
+      }
+
+      .recording-list {
+        display: grid;
+      }
+
+      .recording-item {
+        display: grid;
+        grid-template-columns: 1.4fr 1fr auto auto;
+        gap: 12px;
+        align-items: center;
+        padding: 12px 14px;
+        border-top: 1px solid #24303b;
+      }
+
+      .recording-item:first-child {
+        border-top: 0;
+      }
+
+      .recording-item a {
+        font-weight: 700;
+      }
+
+      .empty {
+        padding: 28px 16px;
+        text-align: center;
+        border: 1px dashed #34404d;
+        border-radius: 8px;
+      }
+
+      @media (max-width: 760px) {
+        .recording-item {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a href="/">Back</a>
+      <h1>Recordings</h1>
+      <p class="meta">Browse saved clips by day and hour. Use filters to narrow by camera and time.</p>
+
+      <section class="panel">
+        <div class="filters">
+          <label>
+            Camera
+            <select id="cameraFilter">
+              <option value="">All cameras</option>
+            </select>
+          </label>
+
+          <label>
+            Date
+            <select id="dateFilter">
+              <option value="">All dates</option>
+            </select>
+          </label>
+
+          <label>
+            Hour
+            <select id="hourFilter">
+              <option value="">All hours</option>
+            </select>
+          </label>
+
+          <label>
+            Search
+            <input id="searchFilter" type="text" placeholder="Camera or filename">
+          </label>
+
+          <label>
+            &nbsp;
+            <button id="resetFilters" type="button">Reset Filters</button>
+          </label>
+        </div>
+
+        <p id="summary" class="summary meta">Loading recordings...</p>
+        <section id="groups"></section>
+      </section>
+    </main>
+
+    <script>
+      const cameraFilter = document.getElementById("cameraFilter");
+      const dateFilter = document.getElementById("dateFilter");
+      const hourFilter = document.getElementById("hourFilter");
+      const searchFilter = document.getElementById("searchFilter");
+      const resetFilters = document.getElementById("resetFilters");
+      const summary = document.getElementById("summary");
+      const groups = document.getElementById("groups");
+
+      let allRecordings = [];
+
+      function formatTimestamp(value) {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+      }
+
+      function formatFileSize(bytes) {
+        if (bytes < 1024) {
+          return `${bytes} B`;
+        }
+        if (bytes < 1024 * 1024) {
+          return `${(bytes / 1024).toFixed(1)} KB`;
+        }
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+      }
+
+      function populateFilter(select, items, valueKey, labelKey) {
+        const currentValue = select.value;
+        select.innerHTML = "";
+        const allOption = document.createElement("option");
+        allOption.value = "";
+        allOption.textContent = select === cameraFilter ? "All cameras" : select === dateFilter ? "All dates" : "All hours";
+        select.append(allOption);
+
+        for (const item of items) {
+          const option = document.createElement("option");
+          if (typeof item === "string") {
+            option.value = item;
+            option.textContent = item;
+          } else {
+            option.value = item[valueKey];
+            option.textContent = item[labelKey];
+          }
+          select.append(option);
+        }
+
+        if ([...select.options].some((option) => option.value === currentValue)) {
+          select.value = currentValue;
+        }
+      }
+
+      function applyFilters() {
+        const search = searchFilter.value.trim().toLowerCase();
+        const filtered = allRecordings.filter((recording) => {
+          const matchesCamera = !cameraFilter.value || recording.camera_id === cameraFilter.value;
+          const matchesDate = !dateFilter.value || recording.date === dateFilter.value;
+          const matchesHour = !hourFilter.value || recording.hour === hourFilter.value;
+          const haystack = `${recording.display_name} ${recording.filename}`.toLowerCase();
+          const matchesSearch = !search || haystack.includes(search);
+          return matchesCamera && matchesDate && matchesHour && matchesSearch;
+        });
+
+        renderRecordings(filtered);
+      }
+
+      function renderRecordings(recordings) {
+        summary.textContent = `${recordings.length} recording${recordings.length === 1 ? "" : "s"} shown`;
+        groups.innerHTML = "";
+
+        if (recordings.length === 0) {
+          groups.innerHTML = '<div class="empty"><div class="empty-copy">No recordings match the current filters.</div></div>';
+          return;
+        }
+
+        const byDate = new Map();
+        for (const recording of recordings) {
+          if (!byDate.has(recording.date)) {
+            byDate.set(recording.date, new Map());
+          }
+          const byHour = byDate.get(recording.date);
+          if (!byHour.has(recording.hour)) {
+            byHour.set(recording.hour, []);
+          }
+          byHour.get(recording.hour).push(recording);
+        }
+
+        for (const [date, hours] of byDate) {
+          const dayGroup = document.createElement("section");
+          dayGroup.className = "day-group";
+
+          const dayHeader = document.createElement("h2");
+          dayHeader.className = "day-header";
+          dayHeader.textContent = date;
+          dayGroup.append(dayHeader);
+
+          for (const [hour, items] of hours) {
+            const hourGroup = document.createElement("section");
+            hourGroup.className = "hour-group";
+
+            const hourHeader = document.createElement("div");
+            hourHeader.className = "hour-header";
+            hourHeader.textContent = `${hour} (${items.length})`;
+            hourGroup.append(hourHeader);
+
+            const list = document.createElement("div");
+            list.className = "recording-list";
+
+            for (const recording of items) {
+              const item = document.createElement("article");
+              item.className = "recording-item";
+              item.innerHTML = `
+                <div>
+                  <a href="${recording.relative_path}" target="_blank" rel="noopener">${recording.display_name}</a>
+                  <div class="meta">${recording.filename}</div>
+                </div>
+                <div class="meta">${formatTimestamp(recording.timestamp)}</div>
+                <div class="meta">${formatFileSize(recording.filesize_bytes)}</div>
+                <div><a href="${recording.relative_path}" target="_blank" rel="noopener">Open</a></div>
+              `;
+              list.append(item);
+            }
+
+            hourGroup.append(list);
+            dayGroup.append(hourGroup);
+          }
+
+          groups.append(dayGroup);
+        }
+      }
+
+      async function loadRecordings() {
+        const response = await fetch("/api/recordings");
+        const payload = await response.json();
+        allRecordings = payload.recordings || [];
+        populateFilter(cameraFilter, payload.filters?.cameras || [], "camera_id", "display_name");
+        populateFilter(dateFilter, payload.filters?.dates || []);
+        populateFilter(hourFilter, payload.filters?.hours || []);
+        applyFilters();
+      }
+
+      for (const element of [cameraFilter, dateFilter, hourFilter]) {
+        element.addEventListener("change", applyFilters);
+      }
+      searchFilter.addEventListener("input", applyFilters);
+      resetFilters.addEventListener("click", () => {
+        cameraFilter.value = "";
+        dateFilter.value = "";
+        hourFilter.value = "";
+        searchFilter.value = "";
+        applyFilters();
+      });
+
+      loadRecordings().catch((error) => {
+        summary.textContent = `Failed to load recordings: ${error.message}`;
+      });
+    </script>
+  </body>
+</html>

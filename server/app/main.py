@@ -1,13 +1,14 @@
 import asyncio
 import base64
 import binascii
+from datetime import datetime
 import math
 import re
 import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -289,6 +290,83 @@ def camera_page():
 @app.get("/viewer")
 def viewer_page():
     return FileResponse(STATIC_DIR / "viewer.html")
+
+
+@app.get("/recordings-browser")
+def recordings_page():
+    return FileResponse(STATIC_DIR / "recordings.html")
+
+
+def parse_recording_timestamp(file_path: Path) -> datetime:
+    timestamp_text = file_path.stem
+    try:
+        normalized = timestamp_text
+        if "T" in normalized:
+            date_part, time_part = normalized.split("T", 1)
+            time_part = time_part.replace("-", ":")
+            normalized = f"{date_part}T{time_part}"
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return datetime.fromtimestamp(file_path.stat().st_mtime)
+
+
+def build_recording_entry(file_path: Path) -> dict[str, Any]:
+    camera_id = file_path.parent.name
+    timestamp = parse_recording_timestamp(file_path)
+    display_name = camera_labels.get(camera_id, camera_id)
+    return {
+        "camera_id": camera_id,
+        "display_name": display_name,
+        "filename": file_path.name,
+        "relative_path": f"/recordings/{camera_id}/{file_path.name}",
+        "timestamp": timestamp.isoformat(),
+        "date": timestamp.strftime("%Y-%m-%d"),
+        "hour": timestamp.strftime("%H:00"),
+        "filesize_bytes": file_path.stat().st_size,
+    }
+
+
+def list_recording_entries() -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for file_path in sorted(RECORDINGS_DIR.glob("*/*"), reverse=True):
+        if not file_path.is_file():
+            continue
+        entries.append(build_recording_entry(file_path))
+    return entries
+
+
+@app.get("/api/recordings")
+def recordings_api(
+    camera_id: str | None = Query(default=None),
+    date: str | None = Query(default=None),
+    hour: str | None = Query(default=None),
+):
+    all_entries = list_recording_entries()
+    entries = list(all_entries)
+    if camera_id:
+        entries = [entry for entry in entries if entry["camera_id"] == camera_id]
+    if date:
+        entries = [entry for entry in entries if entry["date"] == date]
+    if hour:
+        entries = [entry for entry in entries if entry["hour"] == hour]
+
+    cameras = sorted(
+        {
+            (entry["camera_id"], entry["display_name"])
+            for entry in all_entries
+        }
+    )
+    return {
+        "recordings": entries,
+        "filters": {
+            "cameras": [
+                {"camera_id": camera_key, "display_name": display_name}
+                for camera_key, display_name in cameras
+            ],
+            "dates": sorted({entry["date"] for entry in all_entries}, reverse=True),
+            "hours": sorted({entry["hour"] for entry in all_entries}),
+        },
+    }
 
 
 async def send_json_safe(websocket: WebSocket, message: dict[str, Any]) -> bool:

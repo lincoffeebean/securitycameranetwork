@@ -308,7 +308,6 @@
           <div class="camera-meta">
             <div class="timestamp">Waiting for frame</div>
             <div class="meta state-line">State: pending</div>
-            <div class="meta clip-line">Last clip: none</div>
           </div>
 
           <div class="controls">
@@ -542,7 +541,6 @@
         const profileBadge = fragment.querySelector(".profile-badge");
         const timestamp = fragment.querySelector(".timestamp");
         const stateLine = fragment.querySelector(".state-line");
-        const clipLine = fragment.querySelector(".clip-line");
         const form = {
           displayName: fragment.querySelector('[data-field="display_name"]'),
           controlMode: fragment.querySelector('[data-field="control_mode"]'),
@@ -581,7 +579,6 @@
           profileBadge,
           timestamp,
           stateLine,
-          clipLine,
           form,
           overlay,
           config: defaultConfig(),
@@ -692,10 +689,6 @@
       function renderCamera(camera) {
         camera.timestamp.textContent = formatTimestamp(camera.state.last_frame_at);
         camera.stateLine.textContent = `State: ${camera.state.status} | Profile: ${camera.state.current_profile}`;
-        camera.clipLine.innerHTML = camera.state.last_clip_path
-          ? `Last clip: <a href="${camera.state.last_clip_path}" target="_blank" rel="noopener">${formatTimestamp(camera.state.last_clip_at)}</a>`
-          : "Last clip: none";
-
         camera.connectionBadge.textContent = camera.state.recording
           ? "Recording"
           : (camera.state.connected ? "Live" : "Disconnected");
@@ -880,13 +873,6 @@
           `);
         }
 
-        if (message.type === "clip_saved") {
-          prependEvent(`
-            <div class="event-copy"><strong>${message.camera_id}</strong> saved a clip. <a href="${message.clip_path}" target="_blank" rel="noopener">Open recording</a></div>
-            <div class="event-time">${formatTimestamp(message.timestamp)}</div>
-          `);
-        }
-
         if (message.type === "recording_failed") {
           prependEvent(`
             <div class="event-copy"><strong>${message.camera_id}</strong> failed to record: ${message.message}</div>
@@ -1015,7 +1001,7 @@
             updateCameraConfig(message.camera_id, message.config);
           }
 
-          if (message.type === "detection_event" || message.type === "clip_saved" || message.type === "recording_failed") {
+          if (message.type === "detection_event" || message.type === "recording_failed") {
             renderEvent(message);
           }
         });
