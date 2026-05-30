@@ -203,15 +203,17 @@
         config: {
           control_mode: "automatic",
           manual_profile: "idle",
-          idle: { width: 1280, height: 720, fps: 3, quality: 0.6 },
-          active: { width: 1920, height: 1080, fps: 30, quality: 0.85 },
+          idle: { width: 1280, height: 720, fps: 3, quality: 0.6, zoom: 0.5 },
+          active: { width: 1920, height: 1080, fps: 30, quality: 0.85, zoom: 0.5 },
           recording_duration_seconds: 10,
           cooldown_seconds: 12,
-          detection_enabled: true
+          detection_enabled: true,
+          detection_streak_threshold: 2
         },
         currentProfileName: "idle",
         currentProfileKey: "",
         preferredDeviceId: "",
+        appliedZoom: null,
         recording: false,
         started: false
       };
@@ -226,17 +228,18 @@
       }
 
       function summarizeProfile(profile) {
-        return `${profile.width}x${profile.height}, ${profile.fps} FPS, JPEG ${Number(profile.quality).toFixed(2)}`;
+        return `${profile.width}x${profile.height}, ${profile.fps} FPS, JPEG ${Number(profile.quality).toFixed(2)}, Zoom ${Number(profile.zoom || 1).toFixed(2)}x`;
       }
 
       function updateConfigSummaries() {
         idleSummary.textContent = summarizeProfile(state.config.idle);
         activeSummary.textContent = summarizeProfile(state.config.active);
         const modeCopy = state.config.control_mode === "automatic"
-          ? `Automatic: idle detection with human-triggered ${state.config.recording_duration_seconds}s recordings`
+          ? `Automatic: ${state.config.detection_streak_threshold} confirmed detections before a ${state.config.recording_duration_seconds}s recording`
           : `Manual: locked to ${state.config.manual_profile} profile from viewer`;
         modeSummary.textContent = modeCopy;
-        profileSummary.textContent = `Current profile: ${state.currentProfileName}${state.recording ? " recording" : ""}`;
+        const zoomCopy = state.appliedZoom ? ` at ${Number(state.appliedZoom).toFixed(2)}x` : "";
+        profileSummary.textContent = `Current profile: ${state.currentProfileName}${zoomCopy}${state.recording ? " recording" : ""}`;
       }
 
       function activeProfile() {
@@ -264,7 +267,7 @@
       }
 
       function profileKey(name, profile) {
-        return `${name}:${profile.width}:${profile.height}:${profile.fps}`;
+        return `${name}:${profile.width}:${profile.height}:${profile.fps}:${profile.zoom}`;
       }
 
       async function stopStream() {
@@ -281,22 +284,34 @@
         preview.srcObject = null;
       }
 
-      async function zoomAllTheWayOut(stream) {
+      async function applyCameraZoom(stream, requestedZoom) {
         const [track] = stream.getVideoTracks();
         if (!track || !track.getCapabilities || !track.applyConstraints) {
+          state.appliedZoom = null;
           return;
         }
 
         const capabilities = track.getCapabilities();
         if (!capabilities.zoom || typeof capabilities.zoom.min !== "number") {
+          state.appliedZoom = null;
           return;
         }
 
+        const minZoom = Number(capabilities.zoom.min);
+        const maxZoom = typeof capabilities.zoom.max === "number"
+          ? Number(capabilities.zoom.max)
+          : minZoom;
+        const nextZoom = Math.min(maxZoom, Math.max(minZoom, Number(requestedZoom ?? minZoom)));
+
         try {
-          await track.applyConstraints({ advanced: [{ zoom: capabilities.zoom.min }] });
+          await track.applyConstraints({ advanced: [{ zoom: nextZoom }] });
+          state.appliedZoom = nextZoom;
         } catch (error) {
-          console.warn("Minimum zoom is not supported by this camera.", error);
+          state.appliedZoom = null;
+          console.warn("Requested zoom is not supported by this camera.", error);
         }
+
+        updateConfigSummaries();
       }
 
       function rearCameraScore(device) {
@@ -395,7 +410,7 @@
           });
         }
 
-        await zoomAllTheWayOut(stream);
+        await applyCameraZoom(stream, profile.zoom);
         preview.srcObject = stream;
         state.stream = stream;
         state.currentProfileName = name;

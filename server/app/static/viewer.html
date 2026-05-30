@@ -92,7 +92,7 @@
         inset: 0;
         width: 100%;
         height: 100%;
-        transform: rotate(var(--rotation, 0deg));
+        transform: rotate(var(--rotation, 0deg)) scale(var(--digital-zoom, 1));
         transform-origin: center center;
       }
 
@@ -155,6 +155,14 @@
 
       .badge.manual {
         background: #4a6188;
+      }
+
+      .badge.profile-badge {
+        background: #5a6b2e;
+      }
+
+      .badge.profile-badge.active {
+        background: #b36a22;
       }
 
       .camera-meta {
@@ -241,12 +249,6 @@
         margin: 0;
       }
 
-      .section-title {
-        margin: 0;
-        font-size: 0.95rem;
-        letter-spacing: 0;
-      }
-
       #events {
         display: grid;
         gap: 10px;
@@ -289,7 +291,7 @@
 
     <template id="cameraCardTemplate">
       <article class="camera-card">
-        <div class="frame-shell" style="--rotation: 0deg;">
+        <div class="frame-shell" style="--rotation: 0deg; --digital-zoom: 1;">
           <img class="frame-visual" alt="">
           <canvas class="overlay-canvas frame-visual"></canvas>
         </div>
@@ -299,6 +301,7 @@
             <div class="badges">
               <span class="badge connection-badge">Live</span>
               <span class="badge mode-badge">Auto</span>
+              <span class="badge profile-badge">Idle</span>
             </div>
           </div>
 
@@ -345,6 +348,11 @@
               </label>
 
               <label>
+                Idle Zoom
+                <input data-field="idle_zoom" type="number" min="0.5" max="8" step="0.1">
+              </label>
+
+              <label>
                 Active Resolution
                 <select data-field="active_resolution">
                   <option value="1280x720">720p</option>
@@ -363,6 +371,11 @@
               </label>
 
               <label>
+                Active Zoom
+                <input data-field="active_zoom" type="number" min="0.5" max="8" step="0.1">
+              </label>
+
+              <label>
                 Clip Seconds
                 <input data-field="recording_duration_seconds" type="number" min="5" max="60" step="1">
               </label>
@@ -370,6 +383,11 @@
               <label>
                 Cooldown
                 <input data-field="cooldown_seconds" type="number" min="3" max="120" step="1">
+              </label>
+
+              <label>
+                Detection Streak
+                <input data-field="detection_streak_threshold" type="number" min="1" max="5" step="1">
               </label>
             </div>
 
@@ -383,7 +401,7 @@
                 <input data-overlay="enabled" type="checkbox" checked>
                 <span>Pose Overlay</span>
               </label>
-              <button type="button" class="secondary" data-action="rotate">Rotate 90°</button>
+              <button type="button" class="secondary" data-action="rotate">Rotate 90 deg</button>
               <label class="toggle">
                 <input data-overlay="skeleton" type="checkbox" checked>
                 <span>Skeleton</span>
@@ -395,6 +413,10 @@
               <label class="toggle">
                 <input data-overlay="labels" type="checkbox">
                 <span>Labels</span>
+              </label>
+              <label>
+                Viewer Zoom
+                <input data-display="digital_zoom" type="number" min="1" max="4" step="0.25" value="1">
               </label>
             </div>
           </div>
@@ -467,16 +489,13 @@
         return {
           control_mode: "automatic",
           manual_profile: "idle",
-          idle: { width: 1280, height: 720, fps: 3, quality: 0.6 },
-          active: { width: 1920, height: 1080, fps: 30, quality: 0.85 },
+          idle: { width: 1280, height: 720, fps: 3, quality: 0.6, zoom: 0.5 },
+          active: { width: 1920, height: 1080, fps: 30, quality: 0.85, zoom: 0.5 },
           recording_duration_seconds: 10,
           cooldown_seconds: 12,
-          detection_enabled: true
+          detection_enabled: true,
+          detection_streak_threshold: 2
         };
-      }
-
-      function resolutionString(profile) {
-        return `${profile.width}x${profile.height}`;
       }
 
       function setResolution(select, width, height) {
@@ -513,6 +532,7 @@
         const id = fragment.querySelector(".camera-id");
         const connectionBadge = fragment.querySelector(".connection-badge");
         const modeBadge = fragment.querySelector(".mode-badge");
+        const profileBadge = fragment.querySelector(".profile-badge");
         const timestamp = fragment.querySelector(".timestamp");
         const stateLine = fragment.querySelector(".state-line");
         const clipLine = fragment.querySelector(".clip-line");
@@ -522,11 +542,15 @@
           idleResolution: fragment.querySelector('[data-field="idle_resolution"]'),
           idleFps: fragment.querySelector('[data-field="idle_fps"]'),
           idleQuality: fragment.querySelector('[data-field="idle_quality"]'),
+          idleZoom: fragment.querySelector('[data-field="idle_zoom"]'),
           activeResolution: fragment.querySelector('[data-field="active_resolution"]'),
           activeFps: fragment.querySelector('[data-field="active_fps"]'),
           activeQuality: fragment.querySelector('[data-field="active_quality"]'),
+          activeZoom: fragment.querySelector('[data-field="active_zoom"]'),
           recordingDuration: fragment.querySelector('[data-field="recording_duration_seconds"]'),
-          cooldownSeconds: fragment.querySelector('[data-field="cooldown_seconds"]')
+          cooldownSeconds: fragment.querySelector('[data-field="cooldown_seconds"]'),
+          detectionStreakThreshold: fragment.querySelector('[data-field="detection_streak_threshold"]'),
+          digitalZoom: fragment.querySelector('[data-display="digital_zoom"]')
         };
         const overlay = {
           enabled: fragment.querySelector('[data-overlay="enabled"]'),
@@ -546,6 +570,7 @@
           overlayCanvas,
           connectionBadge,
           modeBadge,
+          profileBadge,
           timestamp,
           stateLine,
           clipLine,
@@ -553,6 +578,7 @@
           overlay,
           config: defaultConfig(),
           rotation: 0,
+          digitalZoom: 1,
           poseBusy: false,
           state: {
             connected: false,
@@ -576,6 +602,9 @@
         });
         form.controlMode.addEventListener("change", () => {
           syncManualVisibility(camera);
+        });
+        form.digitalZoom.addEventListener("input", (event) => {
+          updateDigitalZoom(cameraId, event.target.value);
         });
         image.addEventListener("load", () => {
           schedulePoseRender(camera);
@@ -607,11 +636,14 @@
         setResolution(form.idleResolution, config.idle.width, config.idle.height);
         form.idleFps.value = config.idle.fps;
         form.idleQuality.value = Number(config.idle.quality).toFixed(2);
+        form.idleZoom.value = Number(config.idle.zoom || 0.5).toFixed(1);
         setResolution(form.activeResolution, config.active.width, config.active.height);
         form.activeFps.value = config.active.fps;
         form.activeQuality.value = Number(config.active.quality).toFixed(2);
+        form.activeZoom.value = Number(config.active.zoom || 0.5).toFixed(1);
         form.recordingDuration.value = config.recording_duration_seconds;
         form.cooldownSeconds.value = config.cooldown_seconds;
+        form.detectionStreakThreshold.value = config.detection_streak_threshold || 2;
       }
 
       function readConfigFromForm(camera) {
@@ -625,17 +657,20 @@
             width: idleResolution.width,
             height: idleResolution.height,
             fps: Number.parseInt(camera.form.idleFps.value, 10),
-            quality: Number.parseFloat(camera.form.idleQuality.value)
+            quality: Number.parseFloat(camera.form.idleQuality.value),
+            zoom: Number.parseFloat(camera.form.idleZoom.value)
           },
           active: {
             width: activeResolution.width,
             height: activeResolution.height,
             fps: Number.parseInt(camera.form.activeFps.value, 10),
-            quality: Number.parseFloat(camera.form.activeQuality.value)
+            quality: Number.parseFloat(camera.form.activeQuality.value),
+            zoom: Number.parseFloat(camera.form.activeZoom.value)
           },
           recording_duration_seconds: Number.parseInt(camera.form.recordingDuration.value, 10),
           cooldown_seconds: Number.parseInt(camera.form.cooldownSeconds.value, 10),
-          detection_enabled: camera.form.controlMode.value === "automatic"
+          detection_enabled: camera.form.controlMode.value === "automatic",
+          detection_streak_threshold: Number.parseInt(camera.form.detectionStreakThreshold.value, 10)
         };
       }
 
@@ -651,7 +686,10 @@
           : (camera.state.connected ? "Live" : "Disconnected");
         camera.connectionBadge.classList.toggle("recording", camera.state.recording);
         camera.connectionBadge.classList.toggle("disconnected", !camera.state.connected);
+        camera.profileBadge.textContent = camera.state.current_profile === "active" ? "Active" : "Idle";
+        camera.profileBadge.classList.toggle("active", camera.state.current_profile === "active");
         camera.frameShell.style.setProperty("--rotation", `${camera.rotation}deg`);
+        camera.frameShell.style.setProperty("--digital-zoom", `${camera.digitalZoom}`);
         syncManualVisibility(camera);
       }
 
@@ -798,8 +836,9 @@
 
       function renderEvent(message) {
         if (message.type === "detection_event") {
+          const streak = message.detection_hits ? ` after ${message.detection_hits} confirmations` : "";
           prependEvent(`
-            <div class="event-copy"><strong>${message.camera_id}</strong> detected a human.</div>
+            <div class="event-copy"><strong>${message.camera_id}</strong> detected a human${streak}.</div>
             <div class="event-time">${formatTimestamp(message.timestamp)}</div>
           `);
         }
@@ -849,6 +888,7 @@
         if (!socket || socket.readyState !== WebSocket.OPEN) {
           return;
         }
+
         socket.send(JSON.stringify(payload));
       }
 
@@ -874,6 +914,13 @@
       function rotateCamera(cameraId) {
         const camera = ensureCamera(cameraId);
         camera.rotation = (camera.rotation + 90) % 360;
+        renderCamera(camera);
+      }
+
+      function updateDigitalZoom(cameraId, value) {
+        const camera = ensureCamera(cameraId);
+        camera.digitalZoom = Math.min(4, Math.max(1, Number.parseFloat(value) || 1));
+        camera.form.digitalZoom.value = camera.digitalZoom.toFixed(2).replace(/\.00$/, "");
         renderCamera(camera);
       }
 

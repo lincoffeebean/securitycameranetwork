@@ -54,16 +54,19 @@ def default_camera_config() -> dict[str, Any]:
             "height": 720,
             "fps": 3,
             "quality": 0.6,
+            "zoom": 0.5,
         },
         "active": {
             "width": 1920,
             "height": 1080,
             "fps": 30,
             "quality": 0.85,
+            "zoom": 0.5,
         },
         "recording_duration_seconds": 10,
         "cooldown_seconds": 12,
         "detection_enabled": True,
+        "detection_streak_threshold": 2,
     }
 
 
@@ -75,6 +78,7 @@ def default_camera_state(camera_id: str) -> dict[str, Any]:
         "recording": False,
         "last_frame_at": None,
         "last_detection_at": None,
+        "detection_hits": 0,
         "last_clip_path": None,
         "last_clip_at": None,
         "status": "connected",
@@ -90,6 +94,7 @@ def copy_config(config: dict[str, Any]) -> dict[str, Any]:
         "recording_duration_seconds": int(config["recording_duration_seconds"]),
         "cooldown_seconds": int(config["cooldown_seconds"]),
         "detection_enabled": bool(config["detection_enabled"]),
+        "detection_streak_threshold": int(config["detection_streak_threshold"]),
     }
 
 
@@ -198,7 +203,7 @@ def detect_person(frame_data_url: str) -> bool:
         )
 
     for weight in weights:
-        if float(weight) >= 0.15:
+        if float(weight) >= 0.28:
             return True
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -210,8 +215,8 @@ def detect_person(frame_data_url: str) -> bool:
     upper_boxes = upper_body_detector.detectMultiScale(
         gray,
         scaleFactor=1.05,
-        minNeighbors=3,
-        minSize=(48, 48),
+        minNeighbors=5,
+        minSize=(64, 64),
     )
 
     if len(upper_boxes) > 0:
@@ -224,7 +229,7 @@ def detect_person(frame_data_url: str) -> bool:
         padding=(8, 8),
         scale=1.05,
     )
-    return any(float(weight) >= 0.35 for weight in wide_weights)
+    return any(float(weight) >= 0.55 for weight in wide_weights)
 
 
 @app.get("/health")
@@ -323,6 +328,7 @@ async def trigger_recording(camera_id: str, reason: str) -> None:
 
     recording_requests[camera_id] = now
     state["recording"] = True
+    state["current_profile"] = "active"
     state["status"] = f"recording ({reason})"
     await broadcast_camera_state(camera_id)
 
@@ -346,17 +352,26 @@ async def trigger_recording(camera_id: str, reason: str) -> None:
 async def process_detection(camera_id: str, frame_data_url: str, timestamp: str) -> None:
     try:
         detected = await asyncio.to_thread(detect_person, frame_data_url)
+        state = get_camera_state(camera_id)
+        config = get_camera_config(camera_id)
         if not detected:
+            state["detection_hits"] = 0
             return
 
-        state = get_camera_state(camera_id)
+        state["detection_hits"] += 1
         state["last_detection_at"] = timestamp
+        threshold = int(config["detection_streak_threshold"])
+        if state["detection_hits"] < threshold:
+            return
+
+        state["detection_hits"] = 0
 
         event = {
             "type": "detection_event",
             "camera_id": camera_id,
             "timestamp": timestamp,
             "message": "Human detected",
+            "detection_hits": threshold,
         }
         add_recent_event(event)
         await broadcast_to_viewers(event)
@@ -375,6 +390,10 @@ def merge_profile_values(current: dict[str, Any], incoming: dict[str, Any]) -> d
     if "quality" in incoming:
         quality = float(incoming["quality"])
         merged["quality"] = min(0.95, max(0.3, quality))
+
+    if "zoom" in incoming:
+        zoom = float(incoming["zoom"])
+        merged["zoom"] = min(8.0, max(0.5, zoom))
 
     return merged
 
@@ -405,6 +424,12 @@ def merge_config(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str,
 
     if "detection_enabled" in incoming:
         merged["detection_enabled"] = bool(incoming["detection_enabled"])
+
+    if "detection_streak_threshold" in incoming:
+        merged["detection_streak_threshold"] = max(
+            1,
+            min(5, int(incoming["detection_streak_threshold"])),
+        )
 
     if merged["control_mode"] == "manual":
         merged["detection_enabled"] = False
@@ -526,6 +551,7 @@ async def camera_socket(websocket: WebSocket, camera_id: str):
 
             elif message_type == "recording_failed":
                 state["recording"] = False
+                state["current_profile"] = "idle"
                 state["status"] = data.get("message", "recording failed")
                 await broadcast_camera_state(camera_id)
                 await broadcast_to_viewers(
