@@ -704,6 +704,16 @@
             await applyRemotePolicy();
           }
         }
+
+        if (message.type === "disconnect") {
+          setStatus("Disconnected by viewer");
+          if (state.socket && state.socket.readyState === WebSocket.OPEN) {
+            state.socket.close();
+          }
+          await stopStream();
+          startButton.disabled = false;
+          state.started = false;
+        }
       }
 
       function scheduleReconnect() {

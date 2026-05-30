@@ -39,6 +39,7 @@ camera_configs: dict[str, dict[str, Any]] = {}
 recent_events: list[dict[str, Any]] = []
 detection_tasks: dict[str, asyncio.Task[None]] = {}
 recording_requests: dict[str, float] = {}
+camera_labels: dict[str, str] = {}
 
 SAFE_CAMERA_ID = re.compile(r"[^a-zA-Z0-9._-]+")
 MAX_RECENT_EVENTS = 30
@@ -74,6 +75,7 @@ def default_camera_config() -> dict[str, Any]:
 def default_camera_state(camera_id: str) -> dict[str, Any]:
     return {
         "camera_id": camera_id,
+        "display_name": camera_id,
         "connected": True,
         "current_profile": "idle",
         "recording": False,
@@ -108,7 +110,14 @@ def get_camera_config(camera_id: str) -> dict[str, Any]:
 def get_camera_state(camera_id: str) -> dict[str, Any]:
     if camera_id not in camera_states:
         camera_states[camera_id] = default_camera_state(camera_id)
+    camera_states[camera_id]["display_name"] = camera_labels.get(camera_id, camera_id)
     return camera_states[camera_id]
+
+
+def set_camera_label(camera_id: str, display_name: str) -> None:
+    cleaned = display_name.strip() or camera_id
+    camera_labels[camera_id] = cleaned
+    get_camera_state(camera_id)["display_name"] = cleaned
 
 
 def sanitize_camera_id(camera_id: str) -> str:
@@ -372,6 +381,25 @@ async def trigger_recording(camera_id: str, reason: str) -> None:
         state["recording"] = False
         state["status"] = "connected"
         await broadcast_camera_state(camera_id)
+
+
+async def disconnect_camera(camera_id: str, reason: str = "viewer_disconnect") -> None:
+    websocket = camera_connections.get(camera_id)
+    if websocket is None:
+        return
+
+    state = get_camera_state(camera_id)
+    state["status"] = reason
+    await broadcast_camera_state(camera_id)
+    await send_json_safe(
+        websocket,
+        {
+            "type": "disconnect",
+            "camera_id": camera_id,
+            "reason": reason,
+        },
+    )
+    await websocket.close()
 
 
 async def process_detection(
@@ -661,6 +689,13 @@ async def viewer_socket(websocket: WebSocket):
 
             if message_type == "trigger_recording" and camera_id:
                 await trigger_recording(camera_id, "viewer_manual")
+
+            if message_type == "set_display_name" and camera_id:
+                set_camera_label(camera_id, data.get("display_name", ""))
+                await broadcast_camera_state(camera_id)
+
+            if message_type == "disconnect_camera" and camera_id:
+                await disconnect_camera(camera_id)
 
     except WebSocketDisconnect:
         pass

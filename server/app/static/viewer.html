@@ -314,6 +314,11 @@
           <div class="controls">
             <div class="control-grid">
               <label>
+                Camera Name
+                <input data-field="display_name" type="text" autocomplete="off">
+              </label>
+
+              <label>
                 Control Mode
                 <select data-field="control_mode">
                   <option value="automatic">Automatic</option>
@@ -394,6 +399,8 @@
             <div class="button-row">
               <button type="button" data-action="apply">Apply Settings</button>
               <button type="button" class="secondary" data-action="record">Record 10s Now</button>
+              <button type="button" class="secondary" data-action="rename">Save Name</button>
+              <button type="button" class="secondary" data-action="disconnect">Disconnect Camera</button>
             </div>
 
             <div class="overlay-grid">
@@ -537,6 +544,7 @@
         const stateLine = fragment.querySelector(".state-line");
         const clipLine = fragment.querySelector(".clip-line");
         const form = {
+          displayName: fragment.querySelector('[data-field="display_name"]'),
           controlMode: fragment.querySelector('[data-field="control_mode"]'),
           manualProfile: fragment.querySelector('[data-field="manual_profile"]'),
           idleResolution: fragment.querySelector('[data-field="idle_resolution"]'),
@@ -597,6 +605,12 @@
         card.querySelector('[data-action="record"]').addEventListener("click", () => {
           triggerRecording(cameraId);
         });
+        card.querySelector('[data-action="rename"]').addEventListener("click", () => {
+          saveCameraName(cameraId);
+        });
+        card.querySelector('[data-action="disconnect"]').addEventListener("click", () => {
+          disconnectCamera(cameraId);
+        });
         card.querySelector('[data-action="rotate"]').addEventListener("click", () => {
           rotateCamera(cameraId);
         });
@@ -631,6 +645,7 @@
 
       function writeConfigToForm(camera) {
         const { config, form } = camera;
+        form.displayName.value = camera.state.display_name || camera.cameraId;
         form.controlMode.value = config.control_mode;
         form.manualProfile.value = config.manual_profile;
         setResolution(form.idleResolution, config.idle.width, config.idle.height);
@@ -688,6 +703,7 @@
         camera.connectionBadge.classList.toggle("disconnected", !camera.state.connected);
         camera.profileBadge.textContent = camera.state.current_profile === "active" ? "Active" : "Idle";
         camera.profileBadge.classList.toggle("active", camera.state.current_profile === "active");
+        camera.card.querySelector(".camera-id").textContent = camera.state.display_name || camera.cameraId;
         camera.frameShell.style.setProperty("--rotation", `${camera.rotation}deg`);
         camera.frameShell.style.setProperty("--digital-zoom", `${camera.digitalZoom}`);
         syncManualVisibility(camera);
@@ -830,6 +846,9 @@
       function updateCameraState(cameraId, nextState) {
         const camera = ensureCamera(cameraId);
         camera.state = { ...camera.state, ...nextState };
+        if (camera.form.displayName !== document.activeElement) {
+          camera.form.displayName.value = camera.state.display_name || camera.cameraId;
+        }
         renderCamera(camera);
       }
 
@@ -922,9 +941,25 @@
         });
       }
 
+      function saveCameraName(cameraId) {
+        const camera = ensureCamera(cameraId);
+        sendJson({
+          type: "set_display_name",
+          camera_id: cameraId,
+          display_name: camera.form.displayName.value
+        });
+      }
+
       function triggerRecording(cameraId) {
         sendJson({
           type: "trigger_recording",
+          camera_id: cameraId
+        });
+      }
+
+      function disconnectCamera(cameraId) {
+        sendJson({
+          type: "disconnect_camera",
           camera_id: cameraId
         });
       }
