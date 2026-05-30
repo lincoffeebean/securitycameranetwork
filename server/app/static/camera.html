@@ -179,6 +179,10 @@
       <canvas id="captureCanvas"></canvas>
     </main>
 
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
     <script>
       const cameraIdInput = document.getElementById("cameraId");
       const startButton = document.getElementById("startButton");
@@ -200,6 +204,10 @@
         recordingChunks: [],
         recordingStopTimer: null,
         recordingStartedAt: null,
+        poseDetector: null,
+        poseDetectorReady: false,
+        poseBusy: false,
+        lastHumanPresent: false,
         config: {
           control_mode: "automatic",
           manual_profile: "idle",
@@ -220,6 +228,27 @@
 
       function setStatus(message) {
         statusText.textContent = message;
+      }
+
+      async function initializePoseDetector() {
+        if (state.poseDetectorReady || state.poseDetector) {
+          return;
+        }
+
+        if (!window.tf || !window.poseDetection) {
+          throw new Error("Pose detector scripts failed to load.");
+        }
+
+        await tf.setBackend("webgl");
+        await tf.ready();
+        state.poseDetector = await poseDetection.createDetector(
+          poseDetection.SupportedModels.MoveNet,
+          {
+            modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+            enableSmoothing: true
+          }
+        );
+        state.poseDetectorReady = true;
       }
 
       function websocketUrl(cameraId) {
@@ -425,6 +454,61 @@
           : Number(state.config.idle.quality);
       }
 
+      function poseLooksHuman(poses) {
+        if (!Array.isArray(poses) || poses.length === 0) {
+          return false;
+        }
+
+        for (const pose of poses) {
+          const keypoints = new Map();
+          for (const keypoint of pose.keypoints || []) {
+            if ((keypoint.score || 0) >= 0.35) {
+              keypoints.set(keypoint.name, keypoint);
+            }
+          }
+
+          const shoulders = ["left_shoulder", "right_shoulder"].filter((name) => keypoints.has(name)).length;
+          const hips = ["left_hip", "right_hip"].filter((name) => keypoints.has(name)).length;
+          const arms = ["left_elbow", "right_elbow", "left_wrist", "right_wrist"].filter((name) => keypoints.has(name)).length;
+          const head = ["nose", "left_eye", "right_eye", "left_ear", "right_ear"].filter((name) => keypoints.has(name)).length;
+          const confidentCount = keypoints.size;
+
+          if (shoulders >= 2 && (hips >= 1 || arms >= 1 || head >= 1) && confidentCount >= 4) {
+            return true;
+          }
+
+          if (shoulders >= 1 && arms >= 2 && head >= 1 && confidentCount >= 4) {
+            return true;
+          }
+        }
+
+        return false;
+      }
+
+      async function detectHumanPresence() {
+        if (!state.poseDetectorReady || !state.poseDetector || state.poseBusy) {
+          return state.lastHumanPresent;
+        }
+
+        if (!preview.videoWidth || !preview.videoHeight) {
+          return state.lastHumanPresent;
+        }
+
+        state.poseBusy = true;
+        try {
+          const poses = await state.poseDetector.estimatePoses(preview, {
+            flipHorizontal: false
+          });
+          state.lastHumanPresent = poseLooksHuman(poses);
+        } catch (error) {
+          console.warn("Pose detection failed.", error);
+        } finally {
+          state.poseBusy = false;
+        }
+
+        return state.lastHumanPresent;
+      }
+
       function frameIntervalMs() {
         const profile = desiredProfile();
         return Math.max(150, Math.round(1000 / Math.max(1, Number(profile.fps))));
@@ -443,7 +527,7 @@
         }));
       }
 
-      function sendFrame() {
+      async function sendFrame() {
         if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
           return;
         }
@@ -459,12 +543,16 @@
         captureCanvas.width = preview.videoWidth;
         captureCanvas.height = preview.videoHeight;
         captureContext.drawImage(preview, 0, 0, captureCanvas.width, captureCanvas.height);
+        const humanPresent = state.currentProfileName === "idle"
+          ? await detectHumanPresence()
+          : false;
 
         state.socket.send(JSON.stringify({
           type: "frame",
           frame: captureCanvas.toDataURL("image/jpeg", frameQuality()),
           timestamp: new Date().toISOString(),
-          profile: state.currentProfileName
+          profile: state.currentProfileName,
+          human_present: humanPresent
         }));
       }
 
@@ -665,6 +753,7 @@
             throw new Error("Camera access is not available in this browser context. Use HTTPS, localhost, or a browser that supports getUserMedia.");
           }
 
+          await initializePoseDetector();
           state.started = true;
           await ensureStreamForProfile("idle", idleProfile());
           state.preferredDeviceId = await selectPreferredRearCameraDevice();

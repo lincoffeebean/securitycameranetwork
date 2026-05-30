@@ -374,9 +374,17 @@ async def trigger_recording(camera_id: str, reason: str) -> None:
         await broadcast_camera_state(camera_id)
 
 
-async def process_detection(camera_id: str, frame_data_url: str, timestamp: str) -> None:
+async def process_detection(
+    camera_id: str,
+    frame_data_url: str,
+    timestamp: str,
+    client_human_present: bool | None = None,
+) -> None:
     try:
-        detected = await asyncio.to_thread(detect_person, frame_data_url)
+        if isinstance(client_human_present, bool):
+            detected = client_human_present
+        else:
+            detected = await asyncio.to_thread(detect_person, frame_data_url)
         state = get_camera_state(camera_id)
         config = get_camera_config(camera_id)
         if not detected:
@@ -535,6 +543,7 @@ async def camera_socket(websocket: WebSocket, camera_id: str):
                 frame = data.get("frame")
                 timestamp = data.get("timestamp")
                 profile = data.get("profile", "idle")
+                client_human_present = data.get("human_present")
 
                 if not frame or not timestamp:
                     continue
@@ -562,7 +571,7 @@ async def camera_socket(websocket: WebSocket, camera_id: str):
                 )
                 if should_detect:
                     detection_tasks[camera_id] = asyncio.create_task(
-                        process_detection(camera_id, frame, timestamp)
+                        process_detection(camera_id, frame, timestamp, client_human_present)
                     )
 
             elif message_type == "camera_state":

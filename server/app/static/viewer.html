@@ -701,19 +701,34 @@
       function drawPose(camera, poses) {
         const canvas = camera.overlayCanvas;
         const context = canvas.getContext("2d");
-        const width = camera.image.naturalWidth || camera.image.width;
-        const height = camera.image.naturalHeight || camera.image.height;
+        const sourceWidth = camera.image.naturalWidth || camera.image.width;
+        const sourceHeight = camera.image.naturalHeight || camera.image.height;
+        const displayWidth = camera.image.clientWidth || camera.frameShell.clientWidth;
+        const displayHeight = camera.image.clientHeight || camera.frameShell.clientHeight;
 
-        if (!width || !height) {
+        if (!sourceWidth || !sourceHeight || !displayWidth || !displayHeight) {
           return;
         }
 
-        canvas.width = width;
-        canvas.height = height;
-        context.clearRect(0, 0, width, height);
+        canvas.width = displayWidth;
+        canvas.height = displayHeight;
+        context.clearRect(0, 0, displayWidth, displayHeight);
 
         if (!camera.overlay.enabled.checked || poses.length === 0) {
           return;
+        }
+
+        const scale = Math.min(displayWidth / sourceWidth, displayHeight / sourceHeight);
+        const drawnWidth = sourceWidth * scale;
+        const drawnHeight = sourceHeight * scale;
+        const offsetX = (displayWidth - drawnWidth) / 2;
+        const offsetY = (displayHeight - drawnHeight) / 2;
+
+        function mapPoint(keypoint) {
+          return {
+            x: offsetX + (keypoint.x * scale),
+            y: offsetY + (keypoint.y * scale)
+          };
         }
 
         context.lineWidth = 4;
@@ -737,20 +752,23 @@
               if (!from || !to) {
                 continue;
               }
+              const mappedFrom = mapPoint(from);
+              const mappedTo = mapPoint(to);
               context.beginPath();
-              context.moveTo(from.x, from.y);
-              context.lineTo(to.x, to.y);
+              context.moveTo(mappedFrom.x, mappedFrom.y);
+              context.lineTo(mappedTo.x, mappedTo.y);
               context.stroke();
             }
           }
 
           if (camera.overlay.keypoints.checked) {
             for (const keypoint of pointsByName.values()) {
+              const mapped = mapPoint(keypoint);
               context.beginPath();
-              context.arc(keypoint.x, keypoint.y, 5, 0, Math.PI * 2);
+              context.arc(mapped.x, mapped.y, 5, 0, Math.PI * 2);
               context.fill();
               if (camera.overlay.labels.checked) {
-                context.fillText(keypoint.name, keypoint.x + 8, keypoint.y - 8);
+                context.fillText(keypoint.name, mapped.x + 8, mapped.y - 8);
               }
             }
           }
