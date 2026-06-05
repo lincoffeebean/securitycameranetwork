@@ -28,6 +28,8 @@ The local override path is ignored by Git so the DVR password is not committed:
 server/config/rtsp_cameras.json
 ```
 
+You can also set or change the password from the home page. The server saves it into the local config file and reloads the RTSP workers.
+
 The committed example config uses `HIKVISION_DVR_PASSWORD` in each URL. Set it before starting the server:
 
 ```bash

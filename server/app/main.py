@@ -12,7 +12,7 @@ from fastapi import Body, FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .rtsp_manager import RTSPManager
+from .rtsp_manager import RTSPManager, write_rtsp_config
 
 try:
     import cv2
@@ -819,6 +819,29 @@ def rtsp_cameras_api():
         "config_path": str(manager.config_source) if manager.config_source else None,
         "cameras": manager.list_cameras(),
     }
+
+
+@app.get("/api/rtsp-settings")
+def rtsp_settings_api():
+    manager = get_or_create_rtsp_manager()
+    return {
+        "config_path": str(RTSP_CONFIG_PATH),
+        "has_local_config": RTSP_CONFIG_PATH.exists(),
+        "using_example_config": manager.config_source == RTSP_EXAMPLE_CONFIG_PATH,
+        "camera_count": len(manager.cameras),
+    }
+
+
+@app.post("/api/rtsp-settings")
+async def save_rtsp_settings_api(payload: dict[str, Any] | None = Body(default=None)):
+    payload = payload or {}
+    password = str(payload.get("hikvision_dvr_password", "")).strip()
+    if not password:
+        return {"ok": False, "error": "hikvision_dvr_password is required."}
+
+    write_rtsp_config(RTSP_CONFIG_PATH, RTSP_EXAMPLE_CONFIG_PATH, password)
+    result = await get_or_create_rtsp_manager().reload()
+    return {"ok": True, **result}
 
 
 @app.post("/api/rtsp-cameras/reload")

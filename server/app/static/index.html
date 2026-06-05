@@ -40,6 +40,59 @@
         gap: 16px;
       }
 
+      .panel {
+        margin-top: 18px;
+        border: 1px solid #34404d;
+        border-radius: 8px;
+        background: #151c23;
+        padding: 16px;
+      }
+
+      .panel h2 {
+        margin: 0 0 12px;
+        font-size: 1.1rem;
+      }
+
+      .field {
+        display: grid;
+        gap: 8px;
+      }
+
+      label {
+        color: #c7d1dc;
+        font-size: 0.95rem;
+        font-weight: 700;
+      }
+
+      input,
+      button {
+        width: 100%;
+        min-height: 46px;
+        border-radius: 8px;
+        font: inherit;
+      }
+
+      input {
+        border: 1px solid #34404d;
+        background: #10161d;
+        color: #f5f7fa;
+        padding: 0 14px;
+      }
+
+      button {
+        border: 0;
+        background: #5ec4ff;
+        color: #071018;
+        font-weight: 800;
+        cursor: pointer;
+      }
+
+      .status {
+        min-height: 20px;
+        margin: 10px 0 0;
+        color: #c7d1dc;
+      }
+
       a {
         display: flex;
         min-height: 96px;
@@ -70,6 +123,72 @@
         <a href="/recordings-browser">Recordings</a>
         <a href="/camera">Camera Mode</a>
       </nav>
+
+      <section class="panel" aria-label="TopTek DVR settings">
+        <h2>TopTek DVR Password</h2>
+        <div class="field">
+          <label for="hikvisionPassword">HIKVISION_DVR_PASSWORD</label>
+          <input id="hikvisionPassword" type="password" autocomplete="current-password" placeholder="Enter DVR password">
+          <button id="savePassword" type="button">Save Password</button>
+          <p id="passwordStatus" class="status">Loading settings...</p>
+        </div>
+      </section>
     </main>
+
+    <script>
+      const passwordInput = document.getElementById("hikvisionPassword");
+      const savePasswordButton = document.getElementById("savePassword");
+      const passwordStatus = document.getElementById("passwordStatus");
+
+      function setStatus(message) {
+        passwordStatus.textContent = message;
+      }
+
+      async function loadSettings() {
+        try {
+          const response = await fetch("/api/rtsp-settings");
+          const payload = await response.json();
+          setStatus(
+            payload.has_local_config
+              ? "Password is configured on this server."
+              : "Password is not configured yet."
+          );
+        } catch (error) {
+          setStatus(`Could not load settings: ${error.message}`);
+        }
+      }
+
+      savePasswordButton.addEventListener("click", async () => {
+        const hikvision_dvr_password = passwordInput.value.trim();
+        if (!hikvision_dvr_password) {
+          setStatus("Enter a password first.");
+          return;
+        }
+
+        savePasswordButton.disabled = true;
+        setStatus("Saving password...");
+
+        try {
+          const response = await fetch("/api/rtsp-settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ hikvision_dvr_password })
+          });
+          const payload = await response.json();
+          if (!payload.ok) {
+            throw new Error(payload.error || "Save failed.");
+          }
+
+          passwordInput.value = "";
+          setStatus("Password saved. RTSP cameras reloaded.");
+        } catch (error) {
+          setStatus(`Save failed: ${error.message}`);
+        } finally {
+          savePasswordButton.disabled = false;
+        }
+      });
+
+      loadSettings();
+    </script>
   </body>
 </html>

@@ -123,6 +123,31 @@ def load_rtsp_config(config_path: Path, example_path: Path) -> tuple[list[RTSPCa
     return cameras, source_path
 
 
+def build_rtsp_config_entries(example_path: Path, password: str) -> list[dict[str, Any]]:
+    with example_path.open("r", encoding="utf-8") as file:
+        payload = json.load(file)
+
+    raw_cameras = payload.get("cameras", payload) if isinstance(payload, dict) else payload
+    if not isinstance(raw_cameras, list):
+        raise ValueError("RTSP camera example config must be a JSON list or an object with a cameras list.")
+
+    rendered = json.dumps(raw_cameras).replace("${HIKVISION_DVR_PASSWORD}", password)
+    entries = json.loads(rendered)
+    if not isinstance(entries, list):
+        raise ValueError("RTSP camera example config could not be rendered.")
+    return entries
+
+
+def write_rtsp_config(config_path: Path, example_path: Path, password: str) -> Path:
+    if not password:
+        raise ValueError("Password is required.")
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    entries = build_rtsp_config_entries(example_path, password)
+    config_path.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
+    return config_path
+
+
 class RTSPWorker:
     def __init__(
         self,
