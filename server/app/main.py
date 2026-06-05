@@ -5,12 +5,11 @@ from datetime import datetime
 import math
 import os
 import re
+import socket
 import time
 from pathlib import Path
 from typing import Any
-import urllib.error
 import urllib.parse
-import urllib.request
 
 from fastapi import Body, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -488,31 +487,24 @@ def build_webrtc_camera_payload(camera: dict[str, Any], request: Request) -> dic
 
 
 def check_mediamtx_status(request: Request) -> dict[str, Any]:
-    local_url = f"http://127.0.0.1:{MEDIAMTX_WEBRTC_PORT}/"
+    local_url = f"{MEDIAMTX_WEBRTC_SCHEME}://127.0.0.1:{MEDIAMTX_WEBRTC_PORT}"
     public_url = mediamtx_base_url(request)
     try:
-        with urllib.request.urlopen(local_url, timeout=2) as response:
-            return {
-                "reachable": True,
-                "status_code": response.status,
-                "local_url": local_url,
-                "public_url": public_url,
-            }
-    except urllib.error.HTTPError as error:
+        with socket.create_connection(("127.0.0.1", MEDIAMTX_WEBRTC_PORT), timeout=2):
+            pass
         return {
             "reachable": True,
-            "status_code": error.code,
+            "port": MEDIAMTX_WEBRTC_PORT,
+            "local_url": local_url,
+            "public_url": public_url,
+        }
+    except OSError as error:
+        return {
+            "reachable": False,
+            "port": MEDIAMTX_WEBRTC_PORT,
             "local_url": local_url,
             "public_url": public_url,
             "error": str(error),
-        }
-    except urllib.error.URLError as error:
-        return {
-            "reachable": False,
-            "status_code": None,
-            "local_url": local_url,
-            "public_url": public_url,
-            "error": str(error.reason),
         }
 
 
