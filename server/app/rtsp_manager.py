@@ -10,6 +10,7 @@ import re
 import threading
 import time
 from typing import Any, Awaitable, Callable
+from urllib.parse import quote
 
 try:
     import cv2
@@ -69,18 +70,39 @@ def redact_rtsp_url(url: str) -> str:
     return re.sub(r"(rtsp://[^:/@]+:)([^@]+)(@)", r"\1****\3", url)
 
 
+def encode_rtsp_password_in_url(url: str) -> str:
+    if not url.startswith("rtsp://") or "@" not in url:
+        return url
+
+    scheme, remainder = url.split("://", 1)
+    userinfo, hostpart = remainder.split("@", 1)
+    if ":" not in userinfo:
+        return url
+
+    username, password = userinfo.split(":", 1)
+    encoded_password = quote(password, safe="")
+    return f"{scheme}://{username}:{encoded_password}@{hostpart}"
+
+
 def substitute_env(value: str) -> tuple[str, tuple[str, ...]]:
     missing: list[str] = []
+    replaced = False
 
     def replace(match: re.Match[str]) -> str:
+        nonlocal replaced
         name = match.group(1)
         replacement = os.getenv(name)
         if replacement is None:
             missing.append(name)
             return match.group(0)
+        replaced = True
         return replacement
 
-    return ENV_PATTERN.sub(replace, value), tuple(sorted(set(missing)))
+    substituted = ENV_PATTERN.sub(replace, value)
+    if replaced:
+        substituted = encode_rtsp_password_in_url(substituted)
+
+    return substituted, tuple(sorted(set(missing)))
 
 
 def load_rtsp_config(config_path: Path, example_path: Path) -> tuple[list[RTSPCameraConfig], Path | None]:
@@ -131,7 +153,10 @@ def build_rtsp_config_entries(example_path: Path, password: str) -> list[dict[st
     if not isinstance(raw_cameras, list):
         raise ValueError("RTSP camera example config must be a JSON list or an object with a cameras list.")
 
-    rendered = json.dumps(raw_cameras).replace("${HIKVISION_DVR_PASSWORD}", password)
+    rendered = json.dumps(raw_cameras).replace(
+        "${HIKVISION_DVR_PASSWORD}",
+        quote(password, safe=""),
+    )
     entries = json.loads(rendered)
     if not isinstance(entries, list):
         raise ValueError("RTSP camera example config could not be rendered.")
