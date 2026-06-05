@@ -2,17 +2,21 @@ logLevel: info
 
 paths:
   toptek_cam_1:
-    source: rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/102
-    sourceProtocol: tcp
+    source: publisher
+    runOnInit: ffmpeg -hide_banner -loglevel warning -rtsp_transport tcp -analyzeduration 10000000 -probesize 10000000 -i "rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/102" -an -c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+    runOnInitRestart: yes
 
   toptek_cam_2:
-    source: rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/202
-    sourceProtocol: tcp
+    source: publisher
+    runOnInit: ffmpeg -hide_banner -loglevel warning -rtsp_transport tcp -analyzeduration 10000000 -probesize 10000000 -i "rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/202" -an -c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+    runOnInitRestart: yes
 
   toptek_cam_3:
-    source: rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/302
-    sourceProtocol: tcp
+    source: publisher
+    runOnInit: ffmpeg -hide_banner -loglevel warning -rtsp_transport tcp -analyzeduration 10000000 -probesize 10000000 -i "rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/302" -an -c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+    runOnInitRestart: yes
 
   toptek_cam_4:
-    source: rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/402
-    sourceProtocol: tcp
+    source: publisher
+    runOnInit: ffmpeg -hide_banner -loglevel warning -rtsp_transport tcp -analyzeduration 10000000 -probesize 10000000 -i "rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/402" -an -c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+    runOnInitRestart: yes

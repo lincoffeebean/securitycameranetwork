@@ -101,6 +101,8 @@ deploy/mediamtx.yml
 
 It defines four paths: `toptek_cam_1`, `toptek_cam_2`, `toptek_cam_3`, and `toptek_cam_4`.
 
+The Hikvision DVR currently advertises H.264 packetization mode `0`. MediaMTX v1.19 rejects that mode when it pulls the DVR directly, so the deployment config uses `runOnInit` to start FFmpeg for each path. FFmpeg pulls the DVR over RTSP/TCP, copies the H.264 video without re-encoding, and republishes it back into MediaMTX as the browser-facing path.
+
 ## Run MediaMTX Manually
 
 From the Ubuntu repo:
@@ -188,6 +190,7 @@ export MEDIAMTX_WEBRTC_SCHEME=http
 
 - `401 Unauthorized`: DVR username/password or password URL encoding is wrong.
 - H.264 PPS/SPS/CABAC decode errors: DVR codec, smart codec, or platform encryption is still wrong.
+- `unsupported packetization mode: 0` in MediaMTX logs: use the committed FFmpeg republish config instead of direct `source: rtsp://...` paths.
 - FFmpeg works but WebRTC fails: check `journalctl -u mediamtx -f` or the manual MediaMTX terminal output.
 - DVR unreachable: confirm the temporary `192.168.0.200/24` address is still on the Ubuntu interface.
 - Dashboard shows RTSP online but video unavailable: FastAPI can decode the RTSP stream, but the browser cannot reach MediaMTX on port `8889`.

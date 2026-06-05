@@ -97,7 +97,7 @@ Replace `enp1s0` with the actual Ubuntu network interface. Long term, move the D
 
 OpenCV is required for RTSP capture and server-side detection. The Python dependency is already listed in `server/requirements.txt`; on Ubuntu, install FFmpeg/OpenCV runtime libraries if the installed `opencv-python-headless` wheel cannot open RTSP streams.
 
-MediaMTX is required for TopTek browser video playback. The deployment config is:
+MediaMTX is required for TopTek browser video playback. The deployment config uses FFmpeg to republish the Hikvision RTSP substreams into MediaMTX without re-encoding, which avoids the DVR's packetization-mode compatibility issue. The config is:
 
 ```text
 deploy/mediamtx.yml
