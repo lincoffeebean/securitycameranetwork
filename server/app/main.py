@@ -8,9 +8,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+from .rtsp_manager import RTSPManager
 
 try:
     import cv2
@@ -26,6 +28,9 @@ APP_DIR = Path(__file__).resolve().parent
 SERVER_DIR = APP_DIR.parent
 PROJECT_DIR = SERVER_DIR.parent
 STATIC_DIR = APP_DIR / "static"
+CONFIG_DIR = SERVER_DIR / "config"
+RTSP_CONFIG_PATH = CONFIG_DIR / "rtsp_cameras.json"
+RTSP_EXAMPLE_CONFIG_PATH = CONFIG_DIR / "rtsp_cameras.example.json"
 RECORDINGS_DIR = PROJECT_DIR / "recordings"
 RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -41,6 +46,7 @@ recent_events: list[dict[str, Any]] = []
 detection_tasks: dict[str, asyncio.Task[None]] = {}
 recording_requests: dict[str, float] = {}
 camera_labels: dict[str, str] = {}
+rtsp_manager: RTSPManager | None = None
 
 SAFE_CAMERA_ID = re.compile(r"[^a-zA-Z0-9._-]+")
 MAX_RECENT_EVENTS = 30
@@ -85,6 +91,10 @@ def default_camera_state(camera_id: str) -> dict[str, Any]:
         "detection_hits": 0,
         "last_clip_path": None,
         "last_clip_at": None,
+        "source": "browser",
+        "rtsp_status": None,
+        "rtsp_reconnect_count": 0,
+        "rtsp_error": None,
         "status": "connected",
     }
 
@@ -269,11 +279,13 @@ def detect_person(frame_data_url: str) -> bool:
 
 @app.get("/health")
 def health():
+    rtsp_cameras = rtsp_manager.list_cameras() if rtsp_manager is not None else []
     return {
         "status": "online",
         "service": "security-camera-network",
         "detector_available": detector_available(),
         "connected_cameras": len(camera_connections),
+        "rtsp_cameras": len(rtsp_cameras),
     }
 
 
@@ -392,18 +404,16 @@ async def broadcast_to_viewers(message: dict[str, Any]) -> None:
 
 async def push_config_to_camera(camera_id: str) -> None:
     websocket = camera_connections.get(camera_id)
-    if websocket is None:
-        return
-
     config = copy_config(get_camera_config(camera_id))
-    await send_json_safe(
-        websocket,
-        {
-            "type": "config",
-            "camera_id": camera_id,
-            "config": config,
-        },
-    )
+    if websocket is not None:
+        await send_json_safe(
+            websocket,
+            {
+                "type": "config",
+                "camera_id": camera_id,
+                "config": config,
+            },
+        )
     await broadcast_to_viewers(
         {
             "type": "camera_config",
@@ -424,9 +434,14 @@ async def broadcast_camera_state(camera_id: str) -> None:
     )
 
 
+def is_rtsp_camera(camera_id: str) -> bool:
+    return rtsp_manager is not None and rtsp_manager.has_camera(camera_id)
+
+
 async def trigger_recording(camera_id: str, reason: str) -> None:
     websocket = camera_connections.get(camera_id)
-    if websocket is None:
+    rtsp_camera = is_rtsp_camera(camera_id)
+    if websocket is None and not rtsp_camera:
         return
 
     config = get_camera_config(camera_id)
@@ -443,6 +458,28 @@ async def trigger_recording(camera_id: str, reason: str) -> None:
     state["current_profile"] = "active"
     state["status"] = f"recording ({reason})"
     await broadcast_camera_state(camera_id)
+
+    if rtsp_camera and websocket is None:
+        assert rtsp_manager is not None
+        started, error_message = await rtsp_manager.start_recording(
+            camera_id,
+            int(config["recording_duration_seconds"]),
+            reason,
+        )
+        if not started:
+            state["recording"] = False
+            state["current_profile"] = "idle"
+            state["status"] = error_message or "recording failed"
+            await broadcast_camera_state(camera_id)
+            await broadcast_to_viewers(
+                {
+                    "type": "recording_failed",
+                    "camera_id": camera_id,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "message": state["status"],
+                }
+            )
+        return
 
     started = await send_json_safe(
         websocket,
@@ -621,6 +658,184 @@ async def save_recording_clip(camera_id: str, message: dict[str, Any]) -> None:
     await push_config_to_camera(camera_id)
 
 
+def get_or_create_rtsp_manager() -> RTSPManager:
+    global rtsp_manager
+
+    if rtsp_manager is None:
+        rtsp_manager = RTSPManager(
+            config_path=RTSP_CONFIG_PATH,
+            example_path=RTSP_EXAMPLE_CONFIG_PATH,
+            recordings_dir=RECORDINGS_DIR,
+            on_camera=register_rtsp_camera,
+            on_status=handle_rtsp_status,
+            on_frame=handle_rtsp_frame,
+            on_clip_saved=handle_rtsp_clip_saved,
+            on_recording_failed=handle_rtsp_recording_failed,
+        )
+
+    return rtsp_manager
+
+
+async def register_rtsp_camera(camera: dict[str, Any]) -> None:
+    camera_id = camera["id"]
+    set_camera_label(camera_id, camera.get("name", camera_id))
+
+    state = get_camera_state(camera_id)
+    state["source"] = "rtsp"
+    state["connected"] = False
+    state["current_profile"] = "idle"
+    state["status"] = "offline"
+    state["rtsp_status"] = "offline"
+    state["rtsp_reconnect_count"] = 0
+    state["rtsp_error"] = None
+
+    config = get_camera_config(camera_id)
+    config["detection_enabled"] = bool(camera.get("detect", True))
+    config["idle"]["fps"] = int(camera.get("fps", config["idle"]["fps"]))
+    config["active"]["fps"] = int(camera.get("fps", config["active"]["fps"]))
+
+    await push_config_to_camera(camera_id)
+    await broadcast_camera_state(camera_id)
+
+
+async def handle_rtsp_status(camera_id: str, status: dict[str, Any]) -> None:
+    state = get_camera_state(camera_id)
+    rtsp_status = status.get("status", "offline")
+    state["source"] = "rtsp"
+    state["connected"] = rtsp_status == "online"
+    state["rtsp_status"] = rtsp_status
+    state["rtsp_reconnect_count"] = int(status.get("reconnect_count", 0))
+    state["rtsp_error"] = status.get("error_message")
+    if not state["recording"]:
+        state["status"] = rtsp_status
+        state["current_profile"] = "idle"
+    await broadcast_camera_state(camera_id)
+
+
+async def handle_rtsp_frame(
+    camera_id: str,
+    frame_data_url: str,
+    timestamp: str,
+    camera: dict[str, Any],
+) -> None:
+    state = get_camera_state(camera_id)
+    state["source"] = "rtsp"
+    state["connected"] = True
+    state["last_frame_at"] = timestamp
+    state["rtsp_status"] = "online"
+    state["rtsp_error"] = None
+    state["current_profile"] = "active" if state["recording"] else "idle"
+    if not state["recording"]:
+        state["status"] = "online"
+
+    message = {
+        "type": "frame",
+        "camera_id": camera_id,
+        "frame": frame_data_url,
+        "timestamp": timestamp,
+        "profile": state["current_profile"],
+        "source": "rtsp",
+    }
+    latest_frames[camera_id] = message
+    await broadcast_to_viewers(message)
+
+    config = get_camera_config(camera_id)
+    should_detect = (
+        bool(camera.get("detect", True))
+        and config["control_mode"] == "automatic"
+        and config["detection_enabled"]
+        and not state["recording"]
+        and camera_id not in detection_tasks
+    )
+    if should_detect:
+        detection_tasks[camera_id] = asyncio.create_task(
+            process_detection(camera_id, frame_data_url, timestamp)
+        )
+
+
+async def handle_rtsp_clip_saved(camera_id: str, clip: dict[str, Any]) -> None:
+    timestamp = clip.get("timestamp") or datetime.utcnow().isoformat()
+    state = get_camera_state(camera_id)
+    state["source"] = "rtsp"
+    state["connected"] = True
+    state["recording"] = False
+    state["current_profile"] = "idle"
+    state["last_clip_path"] = clip.get("clip_path")
+    state["last_clip_at"] = timestamp
+    state["status"] = "online"
+    state["rtsp_status"] = "online"
+    state["rtsp_error"] = None
+
+    event = {
+        "type": "clip_saved",
+        "camera_id": camera_id,
+        "timestamp": timestamp,
+        "clip_path": state["last_clip_path"],
+        "mime_type": clip.get("mime_type", "video/mp4"),
+        "started_at": clip.get("started_at"),
+        "ended_at": clip.get("ended_at"),
+    }
+    add_recent_event(event)
+    await broadcast_camera_state(camera_id)
+    await broadcast_to_viewers(event)
+
+
+async def handle_rtsp_recording_failed(
+    camera_id: str,
+    message: str,
+    timestamp: str | None = None,
+) -> None:
+    state = get_camera_state(camera_id)
+    state["recording"] = False
+    state["current_profile"] = "idle"
+    state["status"] = message
+    state["rtsp_error"] = message
+    await broadcast_camera_state(camera_id)
+    await broadcast_to_viewers(
+        {
+            "type": "recording_failed",
+            "camera_id": camera_id,
+            "timestamp": timestamp or datetime.utcnow().isoformat(),
+            "message": message,
+        }
+    )
+
+
+@app.on_event("startup")
+async def startup_rtsp_cameras() -> None:
+    await get_or_create_rtsp_manager().start()
+
+
+@app.on_event("shutdown")
+async def shutdown_rtsp_cameras() -> None:
+    if rtsp_manager is not None:
+        await rtsp_manager.stop()
+
+
+@app.get("/api/rtsp-cameras")
+def rtsp_cameras_api():
+    manager = get_or_create_rtsp_manager()
+    return {
+        "config_path": str(manager.config_source) if manager.config_source else None,
+        "cameras": manager.list_cameras(),
+    }
+
+
+@app.post("/api/rtsp-cameras/reload")
+async def reload_rtsp_cameras_api():
+    return await get_or_create_rtsp_manager().reload()
+
+
+@app.post("/api/rtsp-cameras/test")
+async def test_rtsp_camera_api(payload: dict[str, Any] | None = Body(default=None)):
+    payload = payload or {}
+    return await get_or_create_rtsp_manager().test_camera(
+        camera_id=payload.get("camera_id"),
+        url=payload.get("url"),
+        timeout_seconds=float(payload.get("timeout_seconds", 8)),
+    )
+
+
 @app.websocket("/ws/camera/{camera_id}")
 async def camera_socket(websocket: WebSocket, camera_id: str):
     await websocket.accept()
@@ -628,6 +843,9 @@ async def camera_socket(websocket: WebSocket, camera_id: str):
     get_camera_config(camera_id)
     state = get_camera_state(camera_id)
     state["connected"] = True
+    state["source"] = "browser"
+    state["rtsp_status"] = None
+    state["rtsp_error"] = None
     state["status"] = "connected"
 
     await broadcast_to_viewers(
@@ -663,6 +881,7 @@ async def camera_socket(websocket: WebSocket, camera_id: str):
                     "frame": frame,
                     "timestamp": timestamp,
                     "profile": state["current_profile"],
+                    "source": "browser",
                 }
                 latest_frames[camera_id] = message
                 await broadcast_to_viewers(message)
@@ -716,6 +935,7 @@ async def camera_socket(websocket: WebSocket, camera_id: str):
         latest_frames.pop(camera_id, None)
         state["connected"] = False
         state["recording"] = False
+        state["source"] = "browser"
         state["status"] = "disconnected"
         await broadcast_camera_state(camera_id)
         await broadcast_to_viewers(

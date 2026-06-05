@@ -1,0 +1,42 @@
+[
+  {
+    "id": "toptek_cam_1",
+    "name": "TopTek Camera 1",
+    "url": "rtsp://admin:${HIKVISION_DVR_PASSWORD}@192.168.0.222:554/Streaming/Channels/102",
+    "enabled": true,
+    "fps": 10,
+    "detect": true,
+    "record": true,
+    "source": "rtsp"
+  },
+  {
+    "id": "toptek_cam_2",
+    "name": "TopTek Camera 2",
+    "url": "rtsp://admin:${HIKVISION_DVR_PASSWORD}@192.168.0.222:554/Streaming/Channels/202",
+    "enabled": true,
+    "fps": 10,
+    "detect": true,
+    "record": true,
+    "source": "rtsp"
+  },
+  {
+    "id": "toptek_cam_3",
+    "name": "TopTek Camera 3",
+    "url": "rtsp://admin:${HIKVISION_DVR_PASSWORD}@192.168.0.222:554/Streaming/Channels/302",
+    "enabled": true,
+    "fps": 10,
+    "detect": true,
+    "record": true,
+    "source": "rtsp"
+  },
+  {
+    "id": "toptek_cam_4",
+    "name": "TopTek Camera 4",
+    "url": "rtsp://admin:${HIKVISION_DVR_PASSWORD}@192.168.0.222:554/Streaming/Channels/402",
+    "enabled": true,
+    "fps": 10,
+    "detect": true,
+    "record": true,
+    "source": "rtsp"
+  }
+]

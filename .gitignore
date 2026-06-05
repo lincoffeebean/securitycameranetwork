@@ -12,6 +12,7 @@ ENV/
 # Environment files
 .env
 .env.*
+server/config/rtsp_cameras.json
 server/app/static/caddy-root.crt
 
 # Video files

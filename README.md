@@ -4,13 +4,85 @@
 
 This project is a DIY security camera network prototype.
 
-- Phones will eventually record and upload video chunks.
-- A Linux server will store recordings.
-- A web dashboard will eventually view cameras and clips.
+- Phones can stream live JPEG frames through FastAPI WebSockets.
+- A Linux server stores browser-camera and RTSP-camera recordings.
+- A web dashboard views cameras, changes camera policy, and browses clips.
 
-The current MVP only streams live JPEG frames through FastAPI WebSockets. It does not save video, record audio, use a database, or require authentication.
+This project does not record audio, use a database, or require authentication yet. Recordings are saved as local video files under `recordings/` and exposed through the Recordings page.
 
 Camera Mode includes simple controls for FPS, JPEG quality, and capture resolution. Higher settings can look better, but they also use more phone CPU and LAN bandwidth.
+
+## TopTek Hikvision DVR RTSP Support
+
+The `topteksystem` branch adds four server-side Hikvision DVR cameras. They appear in `/viewer` beside normal phone/browser cameras with an `RTSP` source badge.
+
+The default RTSP config template is:
+
+```text
+server/config/rtsp_cameras.example.json
+```
+
+The local override path is ignored by Git so the DVR password is not committed:
+
+```text
+server/config/rtsp_cameras.json
+```
+
+The committed example config uses `HIKVISION_DVR_PASSWORD` in each URL. Set it before starting the server:
+
+```bash
+export HIKVISION_DVR_PASSWORD='your-dvr-password'
+```
+
+On PowerShell:
+
+```powershell
+$env:HIKVISION_DVR_PASSWORD = 'your-dvr-password'
+```
+
+The configured TopTek substreams are:
+
+| Camera | Dashboard stream | Future main stream |
+| --- | --- | --- |
+| TopTek Camera 1 | `/Streaming/Channels/102` | `/Streaming/Channels/101` |
+| TopTek Camera 2 | `/Streaming/Channels/202` | `/Streaming/Channels/201` |
+| TopTek Camera 3 | `/Streaming/Channels/302` | `/Streaming/Channels/301` |
+| TopTek Camera 4 | `/Streaming/Channels/402` | `/Streaming/Channels/401` |
+
+Substreams are used by default because they are lighter for a four-camera dashboard grid. Main streams are better reserved for future high-quality recording work.
+
+Useful RTSP API endpoints:
+
+```text
+GET  /api/rtsp-cameras
+POST /api/rtsp-cameras/reload
+POST /api/rtsp-cameras/test
+```
+
+Example RTSP test request:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/rtsp-cameras/test \
+  -H 'Content-Type: application/json' \
+  -d '{"camera_id":"toptek_cam_1"}'
+```
+
+Before deploying on Ubuntu, confirm the server can reach the DVR:
+
+```bash
+ping 192.168.0.222
+nc -vz 192.168.0.222 554
+```
+
+If the DVR remains on the `192.168.0.x` subnet while the Ubuntu server is primarily on another subnet, add a temporary address on the correct interface:
+
+```bash
+sudo ip addr add 192.168.0.200/24 dev enp1s0
+```
+
+Replace `enp1s0` with the actual Ubuntu network interface. Long term, move the DVR to `192.168.1.222` so it lives on the same LAN as the rest of the deployment.
+
+OpenCV is required for RTSP capture and server-side detection. The Python dependency is already listed in `server/requirements.txt`; on Ubuntu, install FFmpeg/OpenCV runtime libraries if the installed `opencv-python-headless` wheel cannot open RTSP streams.
 
 ## Windows Local Testing
 

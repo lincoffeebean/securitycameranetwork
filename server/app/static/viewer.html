@@ -149,6 +149,10 @@
         background: #7b3a37;
       }
 
+      .badge.reconnecting {
+        background: #8a6929;
+      }
+
       .badge.recording {
         background: #b1453f;
       }
@@ -165,6 +169,14 @@
         background: #b36a22;
       }
 
+      .badge.source-badge {
+        background: #2b3a48;
+      }
+
+      .badge.source-badge.rtsp {
+        background: #4a6188;
+      }
+
       .camera-meta {
         display: grid;
         gap: 4px;
@@ -176,6 +188,11 @@
       }
 
       .controls.is-collapsed {
+        display: none;
+      }
+
+      .camera-card.is-rtsp .browser-only,
+      .camera-card.is-rtsp [data-action="disconnect"] {
         display: none;
       }
 
@@ -320,6 +337,7 @@
             <div class="camera-id"></div>
             <div class="badges">
               <span class="badge connection-badge">Live</span>
+              <span class="badge source-badge">Web</span>
               <span class="badge mode-badge">Auto</span>
               <span class="badge profile-badge">Idle</span>
             </div>
@@ -350,7 +368,7 @@
                 </select>
               </label>
 
-              <label>
+              <label class="browser-only">
                 Manual Profile
                 <select data-field="manual_profile">
                   <option value="idle">Idle</option>
@@ -358,7 +376,7 @@
                 </select>
               </label>
 
-              <label>
+              <label class="browser-only">
                 Idle Resolution
                 <select data-field="idle_resolution">
                   <option value="1280x720">720p</option>
@@ -366,22 +384,22 @@
                 </select>
               </label>
 
-              <label>
+              <label class="browser-only">
                 Idle FPS
                 <input data-field="idle_fps" type="number" min="1" max="30" step="1">
               </label>
 
-              <label>
+              <label class="browser-only">
                 Idle JPEG
                 <input data-field="idle_quality" type="number" min="0.3" max="0.95" step="0.05">
               </label>
 
-              <label>
+              <label class="browser-only">
                 Idle Zoom
                 <input data-field="idle_zoom" type="number" min="0.5" max="8" step="0.1">
               </label>
 
-              <label>
+              <label class="browser-only">
                 Active Resolution
                 <select data-field="active_resolution">
                   <option value="1280x720">720p</option>
@@ -389,17 +407,17 @@
                 </select>
               </label>
 
-              <label>
+              <label class="browser-only">
                 Active FPS
                 <input data-field="active_fps" type="number" min="1" max="60" step="1">
               </label>
 
-              <label>
+              <label class="browser-only">
                 Active JPEG
                 <input data-field="active_quality" type="number" min="0.3" max="0.95" step="0.05">
               </label>
 
-              <label>
+              <label class="browser-only">
                 Active Zoom
                 <input data-field="active_zoom" type="number" min="0.5" max="8" step="0.1">
               </label>
@@ -562,6 +580,7 @@
         const overlayCanvas = fragment.querySelector(".overlay-canvas");
         const id = fragment.querySelector(".camera-id");
         const connectionBadge = fragment.querySelector(".connection-badge");
+        const sourceBadge = fragment.querySelector(".source-badge");
         const modeBadge = fragment.querySelector(".mode-badge");
         const profileBadge = fragment.querySelector(".profile-badge");
         const timestamp = fragment.querySelector(".timestamp");
@@ -602,6 +621,7 @@
           image,
           overlayCanvas,
           connectionBadge,
+          sourceBadge,
           modeBadge,
           profileBadge,
           timestamp,
@@ -618,6 +638,10 @@
             connected: false,
             current_profile: "idle",
             recording: false,
+            source: "browser",
+            rtsp_status: null,
+            rtsp_reconnect_count: 0,
+            rtsp_error: null,
             status: "pending",
             last_clip_path: null,
             last_clip_at: null
@@ -718,16 +742,53 @@
         };
       }
 
+      function cameraSource(camera) {
+        return camera.state.source === "rtsp" ? "rtsp" : "browser";
+      }
+
+      function formatRtspStatus(status) {
+        if (status === "online") {
+          return "Online";
+        }
+        if (status === "reconnecting" || status === "connecting") {
+          return "Reconnecting";
+        }
+        if (status === "error") {
+          return "Error";
+        }
+        return "Offline";
+      }
+
       function renderCamera(camera) {
+        const source = cameraSource(camera);
+        const isRtsp = source === "rtsp";
+        const rtspStatus = camera.state.rtsp_status || camera.state.status || "offline";
+        const rtspError = camera.state.rtsp_error ? ` | ${camera.state.rtsp_error}` : "";
+        const reconnects = Number(camera.state.rtsp_reconnect_count || 0);
+
         camera.timestamp.textContent = formatTimestamp(camera.state.last_frame_at);
-        camera.stateLine.textContent = `State: ${camera.state.status} | Profile: ${camera.state.current_profile}`;
+        camera.stateLine.textContent = isRtsp
+          ? `State: ${formatRtspStatus(rtspStatus)} | Reconnects: ${reconnects}${rtspError}`
+          : `State: ${camera.state.status} | Profile: ${camera.state.current_profile}`;
         camera.connectionBadge.textContent = camera.state.recording
           ? "Recording"
-          : (camera.state.connected ? "Live" : "Disconnected");
+          : isRtsp
+            ? formatRtspStatus(rtspStatus)
+            : (camera.state.connected ? "Live" : "Disconnected");
         camera.connectionBadge.classList.toggle("recording", camera.state.recording);
-        camera.connectionBadge.classList.toggle("disconnected", !camera.state.connected);
+        camera.connectionBadge.classList.toggle(
+          "disconnected",
+          isRtsp ? ["offline", "error"].includes(rtspStatus) : !camera.state.connected
+        );
+        camera.connectionBadge.classList.toggle(
+          "reconnecting",
+          isRtsp && ["connecting", "reconnecting"].includes(rtspStatus)
+        );
+        camera.sourceBadge.textContent = isRtsp ? "RTSP" : "WEB";
+        camera.sourceBadge.classList.toggle("rtsp", isRtsp);
         camera.profileBadge.textContent = camera.state.current_profile === "active" ? "Active" : "Idle";
         camera.profileBadge.classList.toggle("active", camera.state.current_profile === "active");
+        camera.card.classList.toggle("is-rtsp", isRtsp);
         camera.card.querySelector(".camera-id").textContent = camera.state.display_name || camera.cameraId;
         camera.frameShell.style.setProperty("--rotation", `${camera.rotation}deg`);
         camera.frameShell.style.setProperty("--digital-zoom", `${camera.digitalZoom}`);
@@ -860,6 +921,7 @@
         camera.image.src = message.frame;
         camera.state.last_frame_at = message.timestamp;
         camera.state.current_profile = message.profile || camera.state.current_profile;
+        camera.state.source = message.source || camera.state.source;
         renderCamera(camera);
       }
 
