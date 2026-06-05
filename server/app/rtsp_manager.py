@@ -247,7 +247,7 @@ class RTSPWorker:
             )
             logger.info("Connecting RTSP camera %s to %s", self.config.id, redact_rtsp_url(self.config.url))
 
-            capture = cv2.VideoCapture(self.config.url)
+            capture = self.open_capture()
             if not capture.isOpened():
                 reconnect_count += 1
                 message = "Failed to open RTSP stream. Check network, credentials, and channel path."
@@ -299,6 +299,29 @@ class RTSPWorker:
 
         self.finish_recording(success=False, failure_message="RTSP worker stopped before recording completed.")
         self.manager.submit_status(self.config.id, "offline", "RTSP worker stopped.")
+
+    def open_capture(self):
+        candidates = []
+        if hasattr(cv2, "CAP_FFMPEG"):
+            candidates.append(lambda: cv2.VideoCapture(self.config.url, cv2.CAP_FFMPEG))
+        candidates.append(lambda: cv2.VideoCapture(self.config.url))
+
+        last_capture = None
+        for factory in candidates:
+            capture = factory()
+            last_capture = capture
+            if hasattr(capture, "set"):
+                if hasattr(cv2, "CAP_PROP_BUFFERSIZE"):
+                    capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                if hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+                    capture.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)
+                if hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+                    capture.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000)
+            if capture.isOpened():
+                return capture
+            capture.release()
+
+        return last_capture if last_capture is not None else cv2.VideoCapture(self.config.url)
 
     def publish_frame(self, frame: Any) -> None:
         encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), 80]
