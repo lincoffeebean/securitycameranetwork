@@ -19,6 +19,7 @@ except ImportError:  # pragma: no cover - handled at runtime
 
 
 logger = logging.getLogger(__name__)
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS", "rtsp_transport;tcp|stimeout;5000000")
 
 ENV_PATTERN = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 SAFE_CAMERA_ID = re.compile(r"[^a-zA-Z0-9._-]+")
