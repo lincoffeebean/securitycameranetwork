@@ -479,7 +479,6 @@ def build_webrtc_camera_payload(camera: dict[str, Any], request: Request) -> dic
         "webrtc_provider": camera.get("webrtc_provider", "mediamtx"),
         "mediamtx_path": mediamtx_path,
         "webrtc_url": f"{base_url}/{encoded_path}/whep",
-        "webrtc_page_url": f"{base_url}/{encoded_path}/",
         "status": status,
         "rtsp_status": status,
         "reconnect_count": int(camera.get("reconnect_count", 0)),

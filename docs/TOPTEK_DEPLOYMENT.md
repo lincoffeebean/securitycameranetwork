@@ -111,16 +111,7 @@ From the Ubuntu repo:
 ~/mediamtx/mediamtx ~/topteksecurity/deploy/mediamtx.yml
 ```
 
-In another terminal, open the built-in playback pages:
-
-```text
-http://192.168.1.199:8889/toptek_cam_1/
-http://192.168.1.199:8889/toptek_cam_2/
-http://192.168.1.199:8889/toptek_cam_3/
-http://192.168.1.199:8889/toptek_cam_4/
-```
-
-The WHEP endpoints used by the dashboard are:
+MediaMTX does not expose these paths as normal GET pages in this config. The WHEP endpoints used by the FastAPI dashboard are:
 
 ```text
 http://192.168.1.199:8889/toptek_cam_1/whep
@@ -128,6 +119,8 @@ http://192.168.1.199:8889/toptek_cam_2/whep
 http://192.168.1.199:8889/toptek_cam_3/whep
 http://192.168.1.199:8889/toptek_cam_4/whep
 ```
+
+A browser or `curl` GET to these URLs is not a valid playback test. WHEP clients POST an SDP offer to the endpoint; the FastAPI viewer does this automatically.
 
 ## Run MediaMTX With systemd
 
