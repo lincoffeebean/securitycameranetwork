@@ -1,0 +1,18 @@
+logLevel: info
+
+paths:
+  toptek_cam_1:
+    source: rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/102
+    sourceProtocol: tcp
+
+  toptek_cam_2:
+    source: rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/202
+    sourceProtocol: tcp
+
+  toptek_cam_3:
+    source: rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/302
+    sourceProtocol: tcp
+
+  toptek_cam_4:
+    source: rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/402
+    sourceProtocol: tcp

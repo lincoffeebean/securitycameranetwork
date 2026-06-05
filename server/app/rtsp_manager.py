@@ -45,6 +45,9 @@ class RTSPCameraConfig:
     detect: bool
     record: bool
     source: str = "rtsp"
+    live_transport: str = "webrtc"
+    webrtc_provider: str = "mediamtx"
+    mediamtx_path: str = ""
     missing_env: tuple[str, ...] = ()
 
     def public_dict(self) -> dict[str, Any]:
@@ -52,11 +55,15 @@ class RTSPCameraConfig:
             "id": self.id,
             "name": self.name,
             "url": redact_rtsp_url(self.url),
+            "rtsp_url": redact_rtsp_url(self.url),
             "enabled": self.enabled,
             "fps": self.fps,
             "detect": self.detect,
             "record": self.record,
             "source": self.source,
+            "live_transport": self.live_transport,
+            "webrtc_provider": self.webrtc_provider,
+            "mediamtx_path": self.mediamtx_path or self.id,
             "missing_env": list(self.missing_env),
         }
 
@@ -130,8 +137,15 @@ def load_rtsp_config(config_path: Path, example_path: Path) -> tuple[list[RTSPCa
         if not camera_id:
             continue
 
-        url, missing_env = substitute_env(str(item.get("url", "")).strip())
+        source = str(item.get("source") or "rtsp")
+        url, missing_env = substitute_env(str(item.get("url") or item.get("rtsp_url") or "").strip())
         fps = max(1, min(30, int(item.get("fps", 10))))
+        live_transport = str(
+            item.get("live_transport") or ("webrtc" if source == "rtsp" else "jpeg")
+        ).strip()
+        webrtc_provider = str(
+            item.get("webrtc_provider") or ("mediamtx" if live_transport == "webrtc" else "")
+        ).strip()
         cameras.append(
             RTSPCameraConfig(
                 id=camera_id,
@@ -141,7 +155,10 @@ def load_rtsp_config(config_path: Path, example_path: Path) -> tuple[list[RTSPCa
                 fps=fps,
                 detect=bool(item.get("detect", True)),
                 record=bool(item.get("record", True)),
-                source=str(item.get("source") or "rtsp"),
+                source=source,
+                live_transport=live_transport,
+                webrtc_provider=webrtc_provider,
+                mediamtx_path=str(item.get("mediamtx_path") or camera_id).strip(),
                 missing_env=missing_env,
             )
         )

@@ -3,12 +3,16 @@ import base64
 import binascii
 from datetime import datetime
 import math
+import os
 import re
 import time
 from pathlib import Path
 from typing import Any
+import urllib.error
+import urllib.parse
+import urllib.request
 
-from fastapi import Body, FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -33,6 +37,9 @@ RTSP_CONFIG_PATH = CONFIG_DIR / "rtsp_cameras.json"
 RTSP_EXAMPLE_CONFIG_PATH = CONFIG_DIR / "rtsp_cameras.example.json"
 RECORDINGS_DIR = PROJECT_DIR / "recordings"
 RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+MEDIAMTX_WEBRTC_PORT = int(os.getenv("MEDIAMTX_WEBRTC_PORT", "8889"))
+MEDIAMTX_WEBRTC_SCHEME = os.getenv("MEDIAMTX_WEBRTC_SCHEME", "http")
+MEDIAMTX_HOST = os.getenv("MEDIAMTX_HOST", "").strip()
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
@@ -45,6 +52,7 @@ camera_configs: dict[str, dict[str, Any]] = {}
 recent_events: list[dict[str, Any]] = []
 detection_tasks: dict[str, asyncio.Task[None]] = {}
 recording_requests: dict[str, float] = {}
+rtsp_state_broadcast_at: dict[str, float] = {}
 camera_labels: dict[str, str] = {}
 rtsp_manager: RTSPManager | None = None
 
@@ -92,6 +100,9 @@ def default_camera_state(camera_id: str) -> dict[str, Any]:
         "last_clip_path": None,
         "last_clip_at": None,
         "source": "browser",
+        "live_transport": "jpeg",
+        "webrtc_provider": None,
+        "mediamtx_path": None,
         "rtsp_status": None,
         "rtsp_reconnect_count": 0,
         "rtsp_error": None,
@@ -278,7 +289,7 @@ def detect_person(frame_data_url: str) -> bool:
 
 
 @app.get("/health")
-def health():
+def health(request: Request):
     rtsp_cameras = rtsp_manager.list_cameras() if rtsp_manager is not None else []
     return {
         "status": "online",
@@ -286,6 +297,7 @@ def health():
         "detector_available": detector_available(),
         "connected_cameras": len(camera_connections),
         "rtsp_cameras": len(rtsp_cameras),
+        "mediamtx": check_mediamtx_status(request),
     }
 
 
@@ -436,6 +448,73 @@ async def broadcast_camera_state(camera_id: str) -> None:
 
 def is_rtsp_camera(camera_id: str) -> bool:
     return rtsp_manager is not None and rtsp_manager.has_camera(camera_id)
+
+
+def mediamtx_host_for_request(request: Request) -> str:
+    host = MEDIAMTX_HOST or request.url.hostname
+    if not host and request.client is not None:
+        host = request.client.host
+    return host or "127.0.0.1"
+
+
+def mediamtx_base_url(request: Request) -> str:
+    host = mediamtx_host_for_request(request)
+    if ":" not in host:
+        host = f"{host}:{MEDIAMTX_WEBRTC_PORT}"
+    return f"{MEDIAMTX_WEBRTC_SCHEME}://{host}"
+
+
+def build_webrtc_camera_payload(camera: dict[str, Any], request: Request) -> dict[str, Any]:
+    mediamtx_path = str(camera.get("mediamtx_path") or camera["id"])
+    encoded_path = urllib.parse.quote(mediamtx_path.strip("/"), safe="/")
+    base_url = mediamtx_base_url(request)
+    status = camera.get("status", "offline")
+    return {
+        "id": camera["id"],
+        "camera_id": camera["id"],
+        "name": camera.get("name") or camera["id"],
+        "display_name": camera.get("name") or camera["id"],
+        "source": camera.get("source", "rtsp"),
+        "live_transport": camera.get("live_transport", "webrtc"),
+        "webrtc_provider": camera.get("webrtc_provider", "mediamtx"),
+        "mediamtx_path": mediamtx_path,
+        "webrtc_url": f"{base_url}/{encoded_path}/whep",
+        "webrtc_page_url": f"{base_url}/{encoded_path}/",
+        "status": status,
+        "rtsp_status": status,
+        "reconnect_count": int(camera.get("reconnect_count", 0)),
+        "error_message": camera.get("error_message"),
+        "enabled": bool(camera.get("enabled", True)),
+    }
+
+
+def check_mediamtx_status(request: Request) -> dict[str, Any]:
+    local_url = f"http://127.0.0.1:{MEDIAMTX_WEBRTC_PORT}/"
+    public_url = mediamtx_base_url(request)
+    try:
+        with urllib.request.urlopen(local_url, timeout=2) as response:
+            return {
+                "reachable": True,
+                "status_code": response.status,
+                "local_url": local_url,
+                "public_url": public_url,
+            }
+    except urllib.error.HTTPError as error:
+        return {
+            "reachable": True,
+            "status_code": error.code,
+            "local_url": local_url,
+            "public_url": public_url,
+            "error": str(error),
+        }
+    except urllib.error.URLError as error:
+        return {
+            "reachable": False,
+            "status_code": None,
+            "local_url": local_url,
+            "public_url": public_url,
+            "error": str(error.reason),
+        }
 
 
 async def trigger_recording(camera_id: str, reason: str) -> None:
@@ -682,6 +761,9 @@ async def register_rtsp_camera(camera: dict[str, Any]) -> None:
 
     state = get_camera_state(camera_id)
     state["source"] = "rtsp"
+    state["live_transport"] = camera.get("live_transport", "webrtc")
+    state["webrtc_provider"] = camera.get("webrtc_provider", "mediamtx")
+    state["mediamtx_path"] = camera.get("mediamtx_path", camera_id)
     state["connected"] = False
     state["current_profile"] = "idle"
     state["status"] = "offline"
@@ -702,6 +784,12 @@ async def handle_rtsp_status(camera_id: str, status: dict[str, Any]) -> None:
     state = get_camera_state(camera_id)
     rtsp_status = status.get("status", "offline")
     state["source"] = "rtsp"
+    if state.get("live_transport") is None:
+        state["live_transport"] = "webrtc"
+    if state.get("webrtc_provider") is None:
+        state["webrtc_provider"] = "mediamtx"
+    if state.get("mediamtx_path") is None:
+        state["mediamtx_path"] = camera_id
     state["connected"] = rtsp_status == "online"
     state["rtsp_status"] = rtsp_status
     state["rtsp_reconnect_count"] = int(status.get("reconnect_count", 0))
@@ -728,16 +816,11 @@ async def handle_rtsp_frame(
     if not state["recording"]:
         state["status"] = "online"
 
-    message = {
-        "type": "frame",
-        "camera_id": camera_id,
-        "frame": frame_data_url,
-        "timestamp": timestamp,
-        "profile": state["current_profile"],
-        "source": "rtsp",
-    }
-    latest_frames[camera_id] = message
-    await broadcast_to_viewers(message)
+    latest_frames.pop(camera_id, None)
+    now = time.monotonic()
+    if now - rtsp_state_broadcast_at.get(camera_id, 0) >= 5:
+        rtsp_state_broadcast_at[camera_id] = now
+        await broadcast_camera_state(camera_id)
 
     config = get_camera_config(camera_id)
     should_detect = (
@@ -821,6 +904,26 @@ def rtsp_cameras_api():
     }
 
 
+@app.get("/api/webrtc-cameras")
+def webrtc_cameras_api(request: Request):
+    manager = get_or_create_rtsp_manager()
+    cameras = [
+        build_webrtc_camera_payload(camera, request)
+        for camera in manager.list_cameras()
+        if camera.get("source") == "rtsp" and camera.get("live_transport", "webrtc") == "webrtc"
+    ]
+    return {
+        "provider": "mediamtx",
+        "mediamtx": check_mediamtx_status(request),
+        "cameras": cameras,
+    }
+
+
+@app.get("/api/mediamtx/status")
+def mediamtx_status_api(request: Request):
+    return check_mediamtx_status(request)
+
+
 @app.get("/api/rtsp-settings")
 def rtsp_settings_api():
     manager = get_or_create_rtsp_manager()
@@ -867,6 +970,9 @@ async def camera_socket(websocket: WebSocket, camera_id: str):
     state = get_camera_state(camera_id)
     state["connected"] = True
     state["source"] = "browser"
+    state["live_transport"] = "jpeg"
+    state["webrtc_provider"] = None
+    state["mediamtx_path"] = None
     state["rtsp_status"] = None
     state["rtsp_error"] = None
     state["status"] = "connected"

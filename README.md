@@ -5,6 +5,7 @@
 This project is a DIY security camera network prototype.
 
 - Phones can stream live JPEG frames through FastAPI WebSockets.
+- TopTek RTSP cameras can stream live video through MediaMTX WebRTC playback.
 - A Linux server stores browser-camera and RTSP-camera recordings.
 - A web dashboard views cameras, changes camera policy, and browses clips.
 
@@ -14,7 +15,15 @@ Camera Mode includes simple controls for FPS, JPEG quality, and capture resoluti
 
 ## TopTek Hikvision DVR RTSP Support
 
-The `topteksystem` branch adds four server-side Hikvision DVR cameras. They appear in `/viewer` beside normal phone/browser cameras with an `RTSP` source badge.
+The `topteksystem` branch adds four server-side Hikvision DVR cameras. They appear in `/viewer` beside normal phone/browser cameras with `RTSP` and `WebRTC` source badges.
+
+TopTek live viewing uses MediaMTX as an RTSP-to-WebRTC bridge:
+
+```text
+Hikvision DVR RTSP -> MediaMTX -> browser WebRTC <video>
+```
+
+FastAPI still owns metadata, status, controls, detection events, recording events, and server-side recording. Phone/browser cameras continue to use the existing WebSocket JPEG frame path.
 
 The default RTSP config template is:
 
@@ -57,6 +66,8 @@ Useful RTSP API endpoints:
 
 ```text
 GET  /api/rtsp-cameras
+GET  /api/webrtc-cameras
+GET  /api/mediamtx/status
 POST /api/rtsp-cameras/reload
 POST /api/rtsp-cameras/test
 ```
@@ -85,6 +96,18 @@ sudo ip addr add 192.168.0.200/24 dev enp1s0
 Replace `enp1s0` with the actual Ubuntu network interface. Long term, move the DVR to `192.168.1.222` so it lives on the same LAN as the rest of the deployment.
 
 OpenCV is required for RTSP capture and server-side detection. The Python dependency is already listed in `server/requirements.txt`; on Ubuntu, install FFmpeg/OpenCV runtime libraries if the installed `opencv-python-headless` wheel cannot open RTSP streams.
+
+MediaMTX is required for TopTek browser video playback. The deployment config is:
+
+```text
+deploy/mediamtx.yml
+```
+
+Detailed MediaMTX setup and troubleshooting notes are in:
+
+```text
+docs/TOPTEK_DEPLOYMENT.md
+```
 
 ## Windows Local Testing
 
@@ -156,7 +179,13 @@ OpenCV is required for RTSP capture and server-side detection. The Python depend
    uvicorn app.main:app --host 0.0.0.0 --port 8000
    ```
 
-7. Open this address on a phone or laptop:
+7. For TopTek RTSP video playback, run MediaMTX in another terminal:
+
+   ```bash
+   ~/mediamtx/mediamtx ~/topteksecurity/deploy/mediamtx.yml
+   ```
+
+8. Open this address on a phone or laptop:
 
    ```text
    http://192.168.1.199:8000

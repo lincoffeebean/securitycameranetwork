@@ -2,41 +2,57 @@
   {
     "id": "toptek_cam_1",
     "name": "TopTek Camera 1",
+    "source": "rtsp",
+    "live_transport": "webrtc",
+    "webrtc_provider": "mediamtx",
+    "mediamtx_path": "toptek_cam_1",
     "url": "rtsp://admin:${HIKVISION_DVR_PASSWORD}@192.168.0.222:554/Streaming/Channels/102",
+    "rtsp_url": "rtsp://admin:${HIKVISION_DVR_PASSWORD}@192.168.0.222:554/Streaming/Channels/102",
     "enabled": true,
-    "fps": 10,
+    "fps": 12,
     "detect": true,
-    "record": true,
-    "source": "rtsp"
+    "record": true
   },
   {
     "id": "toptek_cam_2",
     "name": "TopTek Camera 2",
+    "source": "rtsp",
+    "live_transport": "webrtc",
+    "webrtc_provider": "mediamtx",
+    "mediamtx_path": "toptek_cam_2",
     "url": "rtsp://admin:${HIKVISION_DVR_PASSWORD}@192.168.0.222:554/Streaming/Channels/202",
+    "rtsp_url": "rtsp://admin:${HIKVISION_DVR_PASSWORD}@192.168.0.222:554/Streaming/Channels/202",
     "enabled": true,
-    "fps": 10,
+    "fps": 12,
     "detect": true,
-    "record": true,
-    "source": "rtsp"
+    "record": true
   },
   {
     "id": "toptek_cam_3",
     "name": "TopTek Camera 3",
+    "source": "rtsp",
+    "live_transport": "webrtc",
+    "webrtc_provider": "mediamtx",
+    "mediamtx_path": "toptek_cam_3",
     "url": "rtsp://admin:${HIKVISION_DVR_PASSWORD}@192.168.0.222:554/Streaming/Channels/302",
+    "rtsp_url": "rtsp://admin:${HIKVISION_DVR_PASSWORD}@192.168.0.222:554/Streaming/Channels/302",
     "enabled": true,
-    "fps": 10,
+    "fps": 12,
     "detect": true,
-    "record": true,
-    "source": "rtsp"
+    "record": true
   },
   {
     "id": "toptek_cam_4",
     "name": "TopTek Camera 4",
+    "source": "rtsp",
+    "live_transport": "webrtc",
+    "webrtc_provider": "mediamtx",
+    "mediamtx_path": "toptek_cam_4",
     "url": "rtsp://admin:${HIKVISION_DVR_PASSWORD}@192.168.0.222:554/Streaming/Channels/402",
+    "rtsp_url": "rtsp://admin:${HIKVISION_DVR_PASSWORD}@192.168.0.222:554/Streaming/Channels/402",
     "enabled": true,
-    "fps": 10,
+    "fps": 12,
     "detect": true,
-    "record": true,
-    "source": "rtsp"
+    "record": true
   }
 ]

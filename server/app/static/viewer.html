@@ -16,6 +16,10 @@
         box-sizing: border-box;
       }
 
+      [hidden] {
+        display: none !important;
+      }
+
       body {
         min-height: 100vh;
         margin: 0;
@@ -97,6 +101,7 @@
       }
 
       .camera-card img,
+      .camera-card video,
       .overlay-canvas {
         display: block;
         width: 100%;
@@ -104,8 +109,38 @@
         object-fit: contain;
       }
 
+      .webrtc-video {
+        background: #06090c;
+      }
+
       .overlay-canvas {
         pointer-events: none;
+      }
+
+      .camera-card.is-webrtc .overlay-canvas {
+        display: none;
+      }
+
+      .webrtc-overlay {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        gap: 12px;
+        padding: 18px;
+        background: rgba(6, 9, 12, 0.72);
+        color: #c7d1dc;
+        text-align: center;
+      }
+
+      .webrtc-overlay-content {
+        display: grid;
+        gap: 10px;
+        width: min(100%, 280px);
+      }
+
+      .webrtc-retry {
+        min-height: 38px;
       }
 
       .camera-body {
@@ -175,6 +210,14 @@
 
       .badge.source-badge.rtsp {
         background: #4a6188;
+      }
+
+      .badge.transport-badge {
+        background: #51602e;
+      }
+
+      .badge.transport-badge.webrtc {
+        background: #2d6a7f;
       }
 
       .camera-meta {
@@ -329,8 +372,15 @@
     <template id="cameraCardTemplate">
       <article class="camera-card">
         <div class="frame-shell" style="--rotation: 0deg; --digital-zoom: 1;">
-          <img class="frame-visual" alt="">
+          <img class="frame-visual jpeg-frame" alt="">
+          <video class="frame-visual webrtc-video" autoplay muted playsinline hidden></video>
           <canvas class="overlay-canvas frame-visual"></canvas>
+          <div class="webrtc-overlay" hidden>
+            <div class="webrtc-overlay-content">
+              <div class="webrtc-message">Connecting video...</div>
+              <button type="button" class="secondary webrtc-retry" data-action="retry-webrtc">Retry video</button>
+            </div>
+          </div>
         </div>
         <div class="camera-body">
           <div class="camera-title">
@@ -338,6 +388,7 @@
             <div class="badges">
               <span class="badge connection-badge">Live</span>
               <span class="badge source-badge">Web</span>
+              <span class="badge transport-badge">JPEG</span>
               <span class="badge mode-badge">Auto</span>
               <span class="badge profile-badge">Idle</span>
             </div>
@@ -485,6 +536,7 @@
       const template = document.getElementById("cameraCardTemplate");
 
       const cameras = new Map();
+      const webrtcCameras = new Map();
       const adjacentKeyPoints = [
         ["left_shoulder", "right_shoulder"],
         ["left_shoulder", "left_elbow"],
@@ -576,11 +628,15 @@
         const fragment = template.content.cloneNode(true);
         const card = fragment.querySelector(".camera-card");
         const frameShell = fragment.querySelector(".frame-shell");
-        const image = fragment.querySelector("img");
+        const image = fragment.querySelector(".jpeg-frame");
+        const video = fragment.querySelector(".webrtc-video");
         const overlayCanvas = fragment.querySelector(".overlay-canvas");
+        const webrtcOverlay = fragment.querySelector(".webrtc-overlay");
+        const webrtcMessage = fragment.querySelector(".webrtc-message");
         const id = fragment.querySelector(".camera-id");
         const connectionBadge = fragment.querySelector(".connection-badge");
         const sourceBadge = fragment.querySelector(".source-badge");
+        const transportBadge = fragment.querySelector(".transport-badge");
         const modeBadge = fragment.querySelector(".mode-badge");
         const profileBadge = fragment.querySelector(".profile-badge");
         const timestamp = fragment.querySelector(".timestamp");
@@ -619,9 +675,13 @@
           card,
           frameShell,
           image,
+          video,
           overlayCanvas,
+          webrtcOverlay,
+          webrtcMessage,
           connectionBadge,
           sourceBadge,
+          transportBadge,
           modeBadge,
           profileBadge,
           timestamp,
@@ -634,11 +694,17 @@
           rotation: 0,
           digitalZoom: 1,
           poseBusy: false,
+          webrtc: null,
+          webrtcStatus: "idle",
+          webrtcError: null,
           state: {
             connected: false,
             current_profile: "idle",
             recording: false,
             source: "browser",
+            live_transport: "jpeg",
+            webrtc_provider: null,
+            mediamtx_path: null,
             rtsp_status: null,
             rtsp_reconnect_count: 0,
             rtsp_error: null,
@@ -660,6 +726,9 @@
         });
         card.querySelector('[data-action="disconnect"]').addEventListener("click", () => {
           disconnectCamera(cameraId);
+        });
+        card.querySelector('[data-action="retry-webrtc"]').addEventListener("click", () => {
+          retryWebrtc(cameraId);
         });
         controlsToggle.addEventListener("click", () => {
           toggleCameraControls(cameraId);
@@ -686,6 +755,7 @@
         cameras.set(cameraId, camera);
         writeConfigToForm(camera);
         syncManualVisibility(camera);
+        maybeStartWebrtc(camera);
         renderCamera(camera);
         return camera;
       }
@@ -746,6 +816,231 @@
         return camera.state.source === "rtsp" ? "rtsp" : "browser";
       }
 
+      function webrtcConfigFor(camera) {
+        return webrtcCameras.get(camera.cameraId) || null;
+      }
+
+      function isWebrtcCamera(camera) {
+        const source = cameraSource(camera);
+        const config = webrtcConfigFor(camera);
+        const transport = camera.state.live_transport || config?.live_transport;
+        return source === "rtsp" && transport === "webrtc";
+      }
+
+      function formatWebrtcStatus(status) {
+        if (status === "online") {
+          return "Online";
+        }
+        if (status === "connecting") {
+          return "Connecting";
+        }
+        if (status === "reconnecting") {
+          return "Reconnecting";
+        }
+        if (status === "failed" || status === "unavailable") {
+          return "Video unavailable";
+        }
+        return "Idle";
+      }
+
+      function setWebrtcStatus(camera, status, message = "") {
+        camera.webrtcStatus = status;
+        camera.webrtcError = message;
+        const showOverlay = status !== "online";
+        camera.webrtcOverlay.hidden = !showOverlay;
+        camera.webrtcMessage.textContent = message || formatWebrtcStatus(status);
+        camera.webrtcOverlay.querySelector(".webrtc-retry").hidden = !["failed", "unavailable"].includes(status);
+      }
+
+      function cleanupWebrtc(camera) {
+        const session = camera.webrtc;
+        if (!session) {
+          return;
+        }
+
+        camera.webrtc = null;
+        if (session.sessionUrl) {
+          fetch(session.sessionUrl, { method: "DELETE", keepalive: true }).catch(() => {});
+        }
+        if (session.pc) {
+          session.pc.ontrack = null;
+          session.pc.onconnectionstatechange = null;
+          session.pc.close();
+        }
+        camera.video.pause();
+        camera.video.srcObject = null;
+      }
+
+      function waitForIceGatheringComplete(peerConnection) {
+        if (peerConnection.iceGatheringState === "complete") {
+          return Promise.resolve();
+        }
+
+        return new Promise((resolve) => {
+          const done = () => {
+            clearTimeout(timeout);
+            peerConnection.removeEventListener("icegatheringstatechange", onChange);
+            resolve();
+          };
+          const onChange = () => {
+            if (peerConnection.iceGatheringState === "complete") {
+              done();
+            }
+          };
+          const timeout = setTimeout(done, 2000);
+          peerConnection.addEventListener("icegatheringstatechange", onChange);
+        });
+      }
+
+      async function startWebrtc(camera) {
+        if (!isWebrtcCamera(camera)) {
+          return;
+        }
+
+        const config = webrtcConfigFor(camera);
+        if (!config?.webrtc_url) {
+          setWebrtcStatus(camera, "unavailable", "MediaMTX playback URL unavailable.");
+          return;
+        }
+
+        if (camera.webrtc && ["connecting", "online"].includes(camera.webrtc.status)) {
+          return;
+        }
+
+        cleanupWebrtc(camera);
+        setWebrtcStatus(camera, "connecting", "Connecting video...");
+
+        const peerConnection = new RTCPeerConnection();
+        const session = {
+          pc: peerConnection,
+          sessionUrl: null,
+          status: "connecting"
+        };
+        camera.webrtc = session;
+
+        peerConnection.addTransceiver("video", { direction: "recvonly" });
+        peerConnection.addTransceiver("audio", { direction: "recvonly" });
+        peerConnection.ontrack = (event) => {
+          if (camera.webrtc !== session) {
+            return;
+          }
+          const stream = event.streams[0] || new MediaStream([event.track]);
+          camera.video.srcObject = stream;
+          camera.video.play().catch(() => {});
+          session.status = "online";
+          setWebrtcStatus(camera, "online", "");
+          renderCamera(camera);
+        };
+        peerConnection.onconnectionstatechange = () => {
+          if (camera.webrtc !== session) {
+            return;
+          }
+          if (peerConnection.connectionState === "connected") {
+            session.status = "online";
+            setWebrtcStatus(camera, "online", "");
+            renderCamera(camera);
+          }
+          if (peerConnection.connectionState === "disconnected") {
+            session.status = "reconnecting";
+            setWebrtcStatus(camera, "reconnecting", "Reconnecting video...");
+            renderCamera(camera);
+          }
+          if (["failed", "closed"].includes(peerConnection.connectionState)) {
+            session.status = "failed";
+            setWebrtcStatus(camera, "failed", "Video unavailable.");
+            renderCamera(camera);
+          }
+        };
+
+        try {
+          const offer = await peerConnection.createOffer();
+          await peerConnection.setLocalDescription(offer);
+          await waitForIceGatheringComplete(peerConnection);
+
+          const response = await fetch(config.webrtc_url, {
+            method: "POST",
+            headers: { "Content-Type": "application/sdp" },
+            body: peerConnection.localDescription.sdp
+          });
+          if (!response.ok) {
+            throw new Error(`MediaMTX WHEP returned ${response.status}`);
+          }
+
+          const location = response.headers.get("Location");
+          if (location) {
+            session.sessionUrl = new URL(location, config.webrtc_url).toString();
+          }
+
+          const answer = await response.text();
+          if (camera.webrtc !== session) {
+            return;
+          }
+          await peerConnection.setRemoteDescription({ type: "answer", sdp: answer });
+        } catch (error) {
+          if (camera.webrtc === session) {
+            session.status = "failed";
+            setWebrtcStatus(camera, "failed", error.message || "Video unavailable.");
+            renderCamera(camera);
+          }
+        }
+      }
+
+      function maybeStartWebrtc(camera) {
+        if (!isWebrtcCamera(camera)) {
+          cleanupWebrtc(camera);
+          setWebrtcStatus(camera, "idle", "");
+          return;
+        }
+
+        if (!camera.webrtc && ["idle", "unavailable"].includes(camera.webrtcStatus)) {
+          startWebrtc(camera);
+        }
+      }
+
+      function retryWebrtc(cameraId) {
+        const camera = ensureCamera(cameraId);
+        cleanupWebrtc(camera);
+        setWebrtcStatus(camera, "connecting", "Connecting video...");
+        startWebrtc(camera);
+      }
+
+      async function refreshWebrtcCameras() {
+        try {
+          const response = await fetch("/api/webrtc-cameras", { cache: "no-store" });
+          if (!response.ok) {
+            throw new Error(`WebRTC camera API returned ${response.status}`);
+          }
+          const payload = await response.json();
+          for (const item of payload.cameras || []) {
+            const cameraId = item.camera_id || item.id;
+            webrtcCameras.set(cameraId, item);
+            const camera = ensureCamera(cameraId);
+            camera.state = {
+              ...camera.state,
+              source: "rtsp",
+              live_transport: item.live_transport || "webrtc",
+              webrtc_provider: item.webrtc_provider || "mediamtx",
+              mediamtx_path: item.mediamtx_path,
+              display_name: item.display_name || item.name || camera.state.display_name,
+              rtsp_status: item.rtsp_status || item.status || camera.state.rtsp_status,
+              rtsp_reconnect_count: item.reconnect_count ?? camera.state.rtsp_reconnect_count,
+              rtsp_error: item.error_message || camera.state.rtsp_error
+            };
+            if (camera.form.displayName !== document.activeElement) {
+              camera.form.displayName.value = camera.state.display_name || camera.cameraId;
+            }
+            renderCamera(camera);
+          }
+        } catch (error) {
+          for (const camera of cameras.values()) {
+            if (cameraSource(camera) === "rtsp") {
+              setWebrtcStatus(camera, "unavailable", error.message || "MediaMTX camera list unavailable.");
+              renderCamera(camera);
+            }
+          }
+        }
+      }
+
       function formatRtspStatus(status) {
         if (status === "online") {
           return "Online";
@@ -762,13 +1057,15 @@
       function renderCamera(camera) {
         const source = cameraSource(camera);
         const isRtsp = source === "rtsp";
+        const usesWebrtc = isWebrtcCamera(camera);
         const rtspStatus = camera.state.rtsp_status || camera.state.status || "offline";
         const rtspError = camera.state.rtsp_error ? ` | ${camera.state.rtsp_error}` : "";
         const reconnects = Number(camera.state.rtsp_reconnect_count || 0);
+        const videoStatus = usesWebrtc ? ` | Video: ${formatWebrtcStatus(camera.webrtcStatus)}` : "";
 
         camera.timestamp.textContent = formatTimestamp(camera.state.last_frame_at);
         camera.stateLine.textContent = isRtsp
-          ? `State: ${formatRtspStatus(rtspStatus)} | Reconnects: ${reconnects}${rtspError}`
+          ? `State: ${formatRtspStatus(rtspStatus)} | Reconnects: ${reconnects}${videoStatus}${rtspError}`
           : `State: ${camera.state.status} | Profile: ${camera.state.current_profile}`;
         camera.connectionBadge.textContent = camera.state.recording
           ? "Recording"
@@ -786,9 +1083,16 @@
         );
         camera.sourceBadge.textContent = isRtsp ? "RTSP" : "WEB";
         camera.sourceBadge.classList.toggle("rtsp", isRtsp);
+        camera.transportBadge.textContent = usesWebrtc ? "WebRTC" : "JPEG";
+        camera.transportBadge.classList.toggle("webrtc", usesWebrtc);
         camera.profileBadge.textContent = camera.state.current_profile === "active" ? "Active" : "Idle";
         camera.profileBadge.classList.toggle("active", camera.state.current_profile === "active");
         camera.card.classList.toggle("is-rtsp", isRtsp);
+        camera.card.classList.toggle("is-webrtc", usesWebrtc);
+        camera.image.hidden = usesWebrtc;
+        camera.video.hidden = !usesWebrtc;
+        camera.overlayCanvas.hidden = usesWebrtc;
+        camera.webrtcOverlay.hidden = !usesWebrtc || camera.webrtcStatus === "online";
         camera.card.querySelector(".camera-id").textContent = camera.state.display_name || camera.cameraId;
         camera.frameShell.style.setProperty("--rotation", `${camera.rotation}deg`);
         camera.frameShell.style.setProperty("--digital-zoom", `${camera.digitalZoom}`);
@@ -918,6 +1222,14 @@
 
       function updateFrame(message) {
         const camera = ensureCamera(message.camera_id);
+        if ((message.source || camera.state.source) === "rtsp") {
+          camera.state.last_frame_at = message.timestamp;
+          camera.state.current_profile = message.profile || camera.state.current_profile;
+          camera.state.source = "rtsp";
+          renderCamera(camera);
+          return;
+        }
+
         camera.image.src = message.frame;
         camera.state.last_frame_at = message.timestamp;
         camera.state.current_profile = message.profile || camera.state.current_profile;
@@ -1121,6 +1433,13 @@
       }
 
       initializePoseDetector();
+      refreshWebrtcCameras();
+      setInterval(refreshWebrtcCameras, 30000);
+      window.addEventListener("beforeunload", () => {
+        for (const camera of cameras.values()) {
+          cleanupWebrtc(camera);
+        }
+      });
       connectViewer();
     </script>
   </body>

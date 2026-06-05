@@ -1,0 +1,14 @@
+[Unit]
+Description=MediaMTX RTSP to WebRTC bridge
+After=network.target
+
+[Service]
+User=expiredsession
+Group=expiredsession
+WorkingDirectory=/home/expiredsession/mediamtx
+ExecStart=/home/expiredsession/mediamtx/mediamtx /home/expiredsession/topteksecurity/deploy/mediamtx.yml
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
