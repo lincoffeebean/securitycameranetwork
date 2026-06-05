@@ -755,7 +755,6 @@
         cameras.set(cameraId, camera);
         writeConfigToForm(camera);
         syncManualVisibility(camera);
-        maybeStartWebrtc(camera);
         renderCamera(camera);
         return camera;
       }
@@ -1099,6 +1098,7 @@
         camera.controlsToggle.setAttribute("aria-expanded", String(!camera.controls.classList.contains("is-collapsed")));
         camera.controlsToggle.querySelector(".arrow").textContent = camera.controls.classList.contains("is-collapsed") ? "▼" : "▲";
         syncManualVisibility(camera);
+        maybeStartWebrtc(camera);
       }
 
       function clearOverlay(camera) {
