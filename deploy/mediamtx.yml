@@ -3,20 +3,20 @@ logLevel: info
 paths:
   toptek_cam_1:
     source: publisher
-    runOnInit: ffmpeg -hide_banner -loglevel warning -rtsp_transport tcp -analyzeduration 10000000 -probesize 10000000 -i "rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/102" -an -c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+    runOnInit: ffmpeg -hide_banner -loglevel warning -rtsp_transport tcp -analyzeduration 10000000 -probesize 10000000 -rw_timeout 15000000 -i "rtsp://admin:${HIKVISION_DVR_PASSWORD_ENCODED}@192.168.0.222:554/Streaming/Channels/102" -an -c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
     runOnInitRestart: yes
 
   toptek_cam_2:
     source: publisher
-    runOnInit: ffmpeg -hide_banner -loglevel warning -rtsp_transport tcp -analyzeduration 10000000 -probesize 10000000 -i "rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/202" -an -c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+    runOnInit: ffmpeg -hide_banner -loglevel warning -rtsp_transport tcp -analyzeduration 10000000 -probesize 10000000 -rw_timeout 15000000 -i "rtsp://admin:${HIKVISION_DVR_PASSWORD_ENCODED}@192.168.0.222:554/Streaming/Channels/202" -an -c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
     runOnInitRestart: yes
 
   toptek_cam_3:
     source: publisher
-    runOnInit: ffmpeg -hide_banner -loglevel warning -rtsp_transport tcp -analyzeduration 10000000 -probesize 10000000 -i "rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/302" -an -c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+    runOnInit: ffmpeg -hide_banner -loglevel warning -rtsp_transport tcp -analyzeduration 10000000 -probesize 10000000 -rw_timeout 15000000 -i "rtsp://admin:${HIKVISION_DVR_PASSWORD_ENCODED}@192.168.0.222:554/Streaming/Channels/302" -an -c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
     runOnInitRestart: yes
 
   toptek_cam_4:
     source: publisher
-    runOnInit: ffmpeg -hide_banner -loglevel warning -rtsp_transport tcp -analyzeduration 10000000 -probesize 10000000 -i "rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/402" -an -c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
+    runOnInit: ffmpeg -hide_banner -loglevel warning -rtsp_transport tcp -analyzeduration 10000000 -probesize 10000000 -rw_timeout 15000000 -i "rtsp://admin:${HIKVISION_DVR_PASSWORD_ENCODED}@192.168.0.222:554/Streaming/Channels/402" -an -c:v copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:$RTSP_PORT/$MTX_PATH
     runOnInitRestart: yes

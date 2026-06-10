@@ -2,17 +2,21 @@ import asyncio
 import base64
 import binascii
 from datetime import datetime
+import hashlib
+import hmac
+import json
 import math
 import os
 import re
+import secrets
 import socket
 import time
 from pathlib import Path
 from typing import Any
 import urllib.parse
 
-from fastapi import Body, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import Body, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .rtsp_manager import RTSPManager, write_rtsp_config
@@ -39,9 +43,13 @@ RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 MEDIAMTX_WEBRTC_PORT = int(os.getenv("MEDIAMTX_WEBRTC_PORT", "8889"))
 MEDIAMTX_WEBRTC_SCHEME = os.getenv("MEDIAMTX_WEBRTC_SCHEME", "http")
 MEDIAMTX_HOST = os.getenv("MEDIAMTX_HOST", "").strip()
+SESSION_COOKIE = "scn_session"
+SESSION_TTL_SECONDS = int(os.getenv("SCN_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
+MAX_CAMERA_ID_LENGTH = 64
+MAX_FRAME_DATA_URL_BYTES = int(os.getenv("SCN_MAX_FRAME_DATA_URL_BYTES", str(5 * 1024 * 1024)))
+MAX_CLIP_DATA_URL_BYTES = int(os.getenv("SCN_MAX_CLIP_DATA_URL_BYTES", str(200 * 1024 * 1024)))
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
 
 latest_frames: dict[str, dict[str, Any]] = {}
 viewer_connections: list[WebSocket] = []
@@ -59,6 +67,129 @@ SAFE_CAMERA_ID = re.compile(r"[^a-zA-Z0-9._-]+")
 MAX_RECENT_EVENTS = 30
 PERSON_DETECTOR = None
 UPPER_BODY_DETECTOR = None
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data: blob:; "
+        "media-src 'self' blob: http: https:; "
+        "connect-src 'self' ws: wss: http: https:; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self';",
+    )
+    return response
+
+
+def get_configured_dvr_password() -> str | None:
+    password = os.getenv("HIKVISION_DVR_PASSWORD")
+    if password:
+        return password
+
+    if not RTSP_CONFIG_PATH.exists():
+        return None
+
+    try:
+        payload = json.loads(RTSP_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    raw_cameras = payload.get("cameras", payload) if isinstance(payload, dict) else payload
+    if not isinstance(raw_cameras, list):
+        return None
+
+    for item in raw_cameras:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or item.get("rtsp_url") or "")
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme == "rtsp" and parsed.password:
+            return urllib.parse.unquote(parsed.password)
+
+    return None
+
+
+def get_session_secret() -> str | None:
+    configured = os.getenv("SCN_SESSION_SECRET")
+    if configured:
+        return configured
+    password = get_configured_dvr_password()
+    if password:
+        return f"security-camera-network:{password}"
+    return None
+
+
+def sign_session_payload(payload: str) -> str | None:
+    secret = get_session_secret()
+    if not secret:
+        return None
+    return hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def create_session_token() -> str | None:
+    expires_at = int(time.time()) + SESSION_TTL_SECONDS
+    payload = f"{expires_at}:{secrets.token_urlsafe(18)}"
+    signature = sign_session_payload(payload)
+    if signature is None:
+        return None
+    raw_token = f"{payload}:{signature}".encode("utf-8")
+    return base64.urlsafe_b64encode(raw_token).decode("ascii")
+
+
+def verify_session_token(token: str | None) -> bool:
+    if not token:
+        return False
+    try:
+        decoded = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+        expires_at_text, nonce, signature = decoded.split(":", 2)
+        payload = f"{expires_at_text}:{nonce}"
+        expires_at = int(expires_at_text)
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        return False
+
+    expected = sign_session_payload(payload)
+    if expected is None or not hmac.compare_digest(signature, expected):
+        return False
+    return expires_at >= int(time.time())
+
+
+def is_authenticated(request: Request) -> bool:
+    return verify_session_token(request.cookies.get(SESSION_COOKIE))
+
+
+def require_api_session(request: Request) -> None:
+    if not is_authenticated(request):
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+
+def protected_page(request: Request, filename: str):
+    if not is_authenticated(request):
+        login_url = f"/login?next={urllib.parse.quote(str(request.url.path), safe='')}"
+        return RedirectResponse(login_url, status_code=303)
+    return FileResponse(STATIC_DIR / filename)
+
+
+def set_session_cookie(response: Response, request: Request, token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=SESSION_TTL_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+    )
+
+
+def is_safe_camera_id(camera_id: str) -> bool:
+    return bool(camera_id) and len(camera_id) <= MAX_CAMERA_ID_LENGTH and SAFE_CAMERA_ID.fullmatch(camera_id)
 
 
 def default_camera_config() -> dict[str, Any]:
@@ -144,6 +275,11 @@ def set_camera_label(camera_id: str, display_name: str) -> None:
 def sanitize_camera_id(camera_id: str) -> str:
     sanitized = SAFE_CAMERA_ID.sub("-", camera_id).strip("-")
     return sanitized or "camera"
+
+
+def sanitize_recording_filename_part(value: Any) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9T_.:-]+", "-", str(value)).strip("-")
+    return cleaned[:80] or time.strftime("%Y-%m-%dT%H-%M-%S")
 
 
 def add_recent_event(event: dict[str, Any]) -> None:
@@ -300,24 +436,76 @@ def health(request: Request):
     }
 
 
+@app.get("/login")
+def login_page(request: Request):
+    if is_authenticated(request):
+        return RedirectResponse("/", status_code=303)
+    return FileResponse(STATIC_DIR / "login.html")
+
+
+@app.post("/api/login")
+async def login_api(request: Request, payload: dict[str, Any] | None = Body(default=None)):
+    payload = payload or {}
+    configured_password = get_configured_dvr_password()
+    submitted_password = str(payload.get("password", ""))
+    if not configured_password:
+        raise HTTPException(status_code=503, detail="DVR password is not configured.")
+    if not hmac.compare_digest(submitted_password, configured_password):
+        raise HTTPException(status_code=401, detail="Invalid password.")
+
+    token = create_session_token()
+    if token is None:
+        raise HTTPException(status_code=503, detail="Session secret is not configured.")
+
+    response = {"ok": True, "expires_in_seconds": SESSION_TTL_SECONDS}
+    api_response = Response(
+        content=json.dumps(response),
+        media_type="application/json",
+    )
+    set_session_cookie(api_response, request, token)
+    return api_response
+
+
+@app.post("/api/logout")
+async def logout_api():
+    response = Response(content=json.dumps({"ok": True}), media_type="application/json")
+    response.delete_cookie(SESSION_COOKIE)
+    return response
+
+
+@app.get("/logout")
+def logout_page():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE)
+    return response
+
+
 @app.get("/")
-def index():
-    return FileResponse(STATIC_DIR / "index.html")
+def index(request: Request):
+    return protected_page(request, "index.html")
 
 
 @app.get("/camera")
-def camera_page():
-    return FileResponse(STATIC_DIR / "camera.html")
+def camera_page(request: Request):
+    return protected_page(request, "camera.html")
 
 
 @app.get("/viewer")
-def viewer_page():
-    return FileResponse(STATIC_DIR / "viewer.html")
+def viewer_page(request: Request):
+    return protected_page(request, "viewer.html")
+
+
+@app.get("/recordings")
+def recordings_redirect(request: Request):
+    if not is_authenticated(request):
+        login_url = f"/login?next={urllib.parse.quote('/recordings-browser', safe='')}"
+        return RedirectResponse(login_url, status_code=303)
+    return RedirectResponse("/recordings-browser", status_code=303)
 
 
 @app.get("/recordings-browser")
-def recordings_page():
-    return FileResponse(STATIC_DIR / "recordings.html")
+def recordings_page(request: Request):
+    return protected_page(request, "recordings.html")
 
 
 def parse_recording_timestamp(file_path: Path) -> datetime:
@@ -335,6 +523,8 @@ def parse_recording_timestamp(file_path: Path) -> datetime:
 
 def build_recording_entry(file_path: Path) -> dict[str, Any]:
     camera_id = file_path.parent.name
+    if not is_safe_camera_id(camera_id):
+        raise ValueError("Unsafe recording camera directory.")
     timestamp = parse_recording_timestamp(file_path)
     display_name = camera_labels.get(camera_id, camera_id)
     return {
@@ -354,16 +544,21 @@ def list_recording_entries() -> list[dict[str, Any]]:
     for file_path in sorted(RECORDINGS_DIR.glob("*/*"), reverse=True):
         if not file_path.is_file():
             continue
-        entries.append(build_recording_entry(file_path))
+        try:
+            entries.append(build_recording_entry(file_path))
+        except ValueError:
+            continue
     return entries
 
 
 @app.get("/api/recordings")
 def recordings_api(
+    request: Request,
     camera_id: str | None = Query(default=None),
     date: str | None = Query(default=None),
     hour: str | None = Query(default=None),
 ):
+    require_api_session(request)
     all_entries = list_recording_entries()
     entries = list(all_entries)
     if camera_id:
@@ -390,6 +585,27 @@ def recordings_api(
             "hours": sorted({entry["hour"] for entry in all_entries}),
         },
     }
+
+
+@app.get("/recordings/{camera_id}/{filename}")
+def recording_file(request: Request, camera_id: str, filename: str):
+    if not is_authenticated(request):
+        login_url = f"/login?next={urllib.parse.quote(str(request.url.path), safe='')}"
+        return RedirectResponse(login_url, status_code=303)
+    if not is_safe_camera_id(camera_id) or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=404, detail="Recording not found.")
+    if not re.fullmatch(r"[A-Za-z0-9T_.:-]+\.(mp4|webm|avi)", filename):
+        raise HTTPException(status_code=404, detail="Recording not found.")
+
+    camera_dir = (RECORDINGS_DIR / camera_id).resolve()
+    recordings_root = RECORDINGS_DIR.resolve()
+    if recordings_root not in camera_dir.parents and camera_dir != recordings_root:
+        raise HTTPException(status_code=404, detail="Recording not found.")
+
+    file_path = (camera_dir / filename).resolve()
+    if camera_dir not in file_path.parents or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Recording not found.")
+    return FileResponse(file_path)
 
 
 async def send_json_safe(websocket: WebSocket, message: dict[str, Any]) -> bool:
@@ -692,6 +908,8 @@ async def save_recording_clip(camera_id: str, message: dict[str, Any]) -> None:
 
     if not clip_data or "," not in clip_data:
         raise ValueError("Missing clip data.")
+    if len(clip_data) > MAX_CLIP_DATA_URL_BYTES:
+        raise ValueError("Clip payload is too large.")
 
     _, _, encoded = clip_data.partition(",")
     binary = base64.b64decode(encoded)
@@ -702,7 +920,7 @@ async def save_recording_clip(camera_id: str, message: dict[str, Any]) -> None:
 
     camera_dir = RECORDINGS_DIR / sanitize_camera_id(camera_id)
     camera_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{timestamp.replace(':', '-').replace('.', '-')}.{extension}"
+    filename = f"{sanitize_recording_filename_part(timestamp)}.{extension}"
     clip_path = camera_dir / filename
     clip_path.write_bytes(binary)
 
@@ -887,7 +1105,8 @@ async def shutdown_rtsp_cameras() -> None:
 
 
 @app.get("/api/rtsp-cameras")
-def rtsp_cameras_api():
+def rtsp_cameras_api(request: Request):
+    require_api_session(request)
     manager = get_or_create_rtsp_manager()
     return {
         "config_path": str(manager.config_source) if manager.config_source else None,
@@ -897,6 +1116,7 @@ def rtsp_cameras_api():
 
 @app.get("/api/webrtc-cameras")
 def webrtc_cameras_api(request: Request):
+    require_api_session(request)
     manager = get_or_create_rtsp_manager()
     cameras = [
         build_webrtc_camera_payload(camera, request)
@@ -912,11 +1132,13 @@ def webrtc_cameras_api(request: Request):
 
 @app.get("/api/mediamtx/status")
 def mediamtx_status_api(request: Request):
+    require_api_session(request)
     return check_mediamtx_status(request)
 
 
 @app.get("/api/rtsp-settings")
-def rtsp_settings_api():
+def rtsp_settings_api(request: Request):
+    require_api_session(request)
     manager = get_or_create_rtsp_manager()
     return {
         "config_path": str(RTSP_CONFIG_PATH),
@@ -927,7 +1149,8 @@ def rtsp_settings_api():
 
 
 @app.post("/api/rtsp-settings")
-async def save_rtsp_settings_api(payload: dict[str, Any] | None = Body(default=None)):
+async def save_rtsp_settings_api(request: Request, payload: dict[str, Any] | None = Body(default=None)):
+    require_api_session(request)
     payload = payload or {}
     password = str(payload.get("hikvision_dvr_password", "")).strip()
     if not password:
@@ -939,22 +1162,37 @@ async def save_rtsp_settings_api(payload: dict[str, Any] | None = Body(default=N
 
 
 @app.post("/api/rtsp-cameras/reload")
-async def reload_rtsp_cameras_api():
+async def reload_rtsp_cameras_api(request: Request):
+    require_api_session(request)
     return await get_or_create_rtsp_manager().reload()
 
 
 @app.post("/api/rtsp-cameras/test")
-async def test_rtsp_camera_api(payload: dict[str, Any] | None = Body(default=None)):
+async def test_rtsp_camera_api(request: Request, payload: dict[str, Any] | None = Body(default=None)):
+    require_api_session(request)
     payload = payload or {}
+    url = payload.get("url")
+    if url:
+        parsed = urllib.parse.urlsplit(str(url))
+        allowed_hosts = {"192.168.0.222", "192.168.1.222"}
+        if parsed.scheme != "rtsp" or parsed.hostname not in allowed_hosts:
+            raise HTTPException(status_code=400, detail="RTSP URL testing is limited to the configured DVR hosts.")
     return await get_or_create_rtsp_manager().test_camera(
         camera_id=payload.get("camera_id"),
-        url=payload.get("url"),
-        timeout_seconds=float(payload.get("timeout_seconds", 8)),
+        url=url,
+        timeout_seconds=min(8.0, max(1.0, float(payload.get("timeout_seconds", 8)))),
     )
 
 
 @app.websocket("/ws/camera/{camera_id}")
 async def camera_socket(websocket: WebSocket, camera_id: str):
+    if not verify_session_token(websocket.cookies.get(SESSION_COOKIE)):
+        await websocket.close(code=1008)
+        return
+    if not is_safe_camera_id(camera_id):
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
     camera_connections[camera_id] = websocket
     get_camera_config(camera_id)
@@ -991,6 +1229,10 @@ async def camera_socket(websocket: WebSocket, camera_id: str):
 
                 if not frame or not timestamp:
                     continue
+                if not isinstance(frame, str) or len(frame) > MAX_FRAME_DATA_URL_BYTES:
+                    state["status"] = "frame rejected: payload too large"
+                    await broadcast_camera_state(camera_id)
+                    continue
 
                 state["last_frame_at"] = timestamp
                 state["current_profile"] = profile if profile in {"idle", "active"} else "idle"
@@ -1026,6 +1268,17 @@ async def camera_socket(websocket: WebSocket, camera_id: str):
                 await broadcast_camera_state(camera_id)
 
             elif message_type == "clip":
+                clip_data = data.get("data")
+                if not isinstance(clip_data, str) or len(clip_data) > MAX_CLIP_DATA_URL_BYTES:
+                    await broadcast_to_viewers(
+                        {
+                            "type": "recording_failed",
+                            "camera_id": camera_id,
+                            "timestamp": datetime.utcnow().isoformat(),
+                            "message": "Clip rejected: payload too large.",
+                        }
+                    )
+                    continue
                 await save_recording_clip(camera_id, data)
 
             elif message_type == "recording_failed":
@@ -1069,6 +1322,10 @@ async def camera_socket(websocket: WebSocket, camera_id: str):
 
 @app.websocket("/ws/viewer")
 async def viewer_socket(websocket: WebSocket):
+    if not verify_session_token(websocket.cookies.get(SESSION_COOKIE)):
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
     viewer_connections.append(websocket)
 
@@ -1096,6 +1353,9 @@ async def viewer_socket(websocket: WebSocket):
             camera_id = data.get("camera_id", "").strip()
 
             if message_type == "ping":
+                continue
+
+            if camera_id and not is_safe_camera_id(camera_id):
                 continue
 
             if message_type == "set_config" and camera_id:

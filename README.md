@@ -9,7 +9,9 @@ This project is a DIY security camera network prototype.
 - A Linux server stores browser-camera and RTSP-camera recordings.
 - A web dashboard views cameras, changes camera policy, and browses clips.
 
-This project does not record audio, use a database, or require authentication yet. Recordings are saved as local video files under `recordings/` and exposed through the Recordings page.
+This project does not record audio, use a database, or have user accounts yet. A simple local password gate protects the dashboard, camera controls, APIs, WebSockets, and recordings. Recordings are saved as local video files under `recordings/` and served only after login.
+
+Do not port-forward this app, the DVR, MediaMTX, or recording files to the public internet. Keep access limited to LAN/Tailscale/VPN or another trusted private network.
 
 Camera Mode includes simple controls for FPS, JPEG quality, and capture resolution. Higher settings can look better, but they also use more phone CPU and LAN bandwidth.
 
@@ -43,13 +45,19 @@ The committed example config uses `HIKVISION_DVR_PASSWORD` in each URL. Set it b
 
 ```bash
 export HIKVISION_DVR_PASSWORD='your-dvr-password'
+export HIKVISION_DVR_PASSWORD_ENCODED='url-encoded-dvr-password'
+export SCN_SESSION_SECRET='generate-a-long-random-value'
 ```
 
 On PowerShell:
 
 ```powershell
 $env:HIKVISION_DVR_PASSWORD = 'your-dvr-password'
+$env:HIKVISION_DVR_PASSWORD_ENCODED = 'url-encoded-dvr-password'
+$env:SCN_SESSION_SECRET = 'generate-a-long-random-value'
 ```
+
+The plain DVR password is used by FastAPI for the local login gate and RTSP workers. The URL-encoded password is used by MediaMTX's FFmpeg republish commands. Earlier private-branch commits contained the real DVR password; rotate that DVR password and keep the new value only in environment variables or ignored local config files.
 
 The configured TopTek substreams are:
 
@@ -132,6 +140,9 @@ docs/TOPTEK_DEPLOYMENT.md
 4. Run the dev server:
 
    ```powershell
+   $env:HIKVISION_DVR_PASSWORD = 'your-dvr-password'
+   $env:HIKVISION_DVR_PASSWORD_ENCODED = 'url-encoded-dvr-password'
+   $env:SCN_SESSION_SECRET = 'generate-a-long-random-value'
    uvicorn app.main:app --reload
    ```
 
@@ -176,12 +187,18 @@ docs/TOPTEK_DEPLOYMENT.md
 6. Run the server on the LAN:
 
    ```bash
+   export HIKVISION_DVR_PASSWORD='your-dvr-password'
+   export HIKVISION_DVR_PASSWORD_ENCODED='url-encoded-dvr-password'
+   export SCN_SESSION_SECRET='generate-a-long-random-value'
    uvicorn app.main:app --host 0.0.0.0 --port 8000
    ```
 
 7. For TopTek RTSP video playback, run MediaMTX in another terminal:
 
    ```bash
+   set -a
+   . ~/topteksecurity/server/.env
+   set +a
    ~/mediamtx/mediamtx ~/topteksecurity/deploy/mediamtx.yml
    ```
 

@@ -1261,10 +1261,10 @@
         });
       }
 
-      function prependEvent(content) {
+      function prependEventNode(node) {
         const event = document.createElement("article");
         event.className = "event";
-        event.innerHTML = content;
+        event.append(node);
         events.prepend(event);
 
         while (events.childElementCount > 12) {
@@ -1272,20 +1272,26 @@
         }
       }
 
+      function createEventContent(copy, timestamp) {
+        const fragment = document.createDocumentFragment();
+        const copyElement = document.createElement("div");
+        copyElement.className = "event-copy";
+        copyElement.textContent = copy;
+        const timeElement = document.createElement("div");
+        timeElement.className = "event-time";
+        timeElement.textContent = formatTimestamp(timestamp);
+        fragment.append(copyElement, timeElement);
+        return fragment;
+      }
+
       function renderEvent(message) {
         if (message.type === "detection_event") {
           const streak = message.detection_hits ? ` after ${message.detection_hits} confirmations` : "";
-          prependEvent(`
-            <div class="event-copy"><strong>${message.camera_id}</strong> detected a human${streak}.</div>
-            <div class="event-time">${formatTimestamp(message.timestamp)}</div>
-          `);
+          prependEventNode(createEventContent(`${message.camera_id} detected a human${streak}.`, message.timestamp));
         }
 
         if (message.type === "recording_failed") {
-          prependEvent(`
-            <div class="event-copy"><strong>${message.camera_id}</strong> failed to record: ${message.message}</div>
-            <div class="event-time">${formatTimestamp(message.timestamp)}</div>
-          `);
+          prependEventNode(createEventContent(`${message.camera_id} failed to record: ${message.message}`, message.timestamp));
         }
       }
 

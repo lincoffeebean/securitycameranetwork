@@ -5,9 +5,10 @@ After=network.target
 [Service]
 User=expiredsession
 Group=expiredsession
-WorkingDirectory=/home/expiredsession/securitycameranetwork/server
-Environment=PATH=/home/expiredsession/securitycameranetwork/server/.venv/bin
-ExecStart=/home/expiredsession/securitycameranetwork/server/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+WorkingDirectory=/home/expiredsession/topteksecurity/server
+Environment=PATH=/home/expiredsession/topteksecurity/server/.venv/bin
+EnvironmentFile=-/home/expiredsession/topteksecurity/server/.env
+ExecStart=/home/expiredsession/topteksecurity/server/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=3
 

@@ -12,8 +12,11 @@ ENV/
 # Environment files
 .env
 .env.*
+server/.env
 server/config/rtsp_cameras.json
 server/app/static/caddy-root.crt
+deploy/mediamtx.local.yml
+*.bundle
 
 # Video files
 *.mp4

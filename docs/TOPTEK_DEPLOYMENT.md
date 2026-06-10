@@ -55,13 +55,17 @@ Required DVR settings:
 
 Camera 1 has been verified as H.264, 960x480, 12 fps.
 
+The DVR password that existed in earlier private-branch commits should be considered exposed and should be rotated on the DVR. Store the current password only in environment variables or ignored local config files.
+
 ## Test RTSP Directly
 
 ```bash
+export HIKVISION_DVR_PASSWORD_ENCODED='url-encoded-dvr-password'
 ffmpeg -rtsp_transport tcp \
   -analyzeduration 10000000 \
   -probesize 10000000 \
-  -i "rtsp://admin:toptek20%3F@192.168.0.222:554/Streaming/Channels/102" \
+  -rw_timeout 15000000 \
+  -i "rtsp://admin:${HIKVISION_DVR_PASSWORD_ENCODED}@192.168.0.222:554/Streaming/Channels/102" \
   -t 10 \
   -f null -
 ```
@@ -103,11 +107,31 @@ It defines four paths: `toptek_cam_1`, `toptek_cam_2`, `toptek_cam_3`, and `topt
 
 The Hikvision DVR currently advertises H.264 packetization mode `0`. MediaMTX v1.19 rejects that mode when it pulls the DVR directly, so the deployment config uses `runOnInit` to start FFmpeg for each path. FFmpeg pulls the DVR over RTSP/TCP, copies the H.264 video without re-encoding, and republishes it back into MediaMTX as the browser-facing path.
 
+The FFmpeg commands include `-rw_timeout 15000000` so a dead DVR read exits instead of leaving MediaMTX with a stale path. MediaMTX then restarts the publisher through `runOnInitRestart`.
+
+The committed MediaMTX config expects this environment variable:
+
+```bash
+export HIKVISION_DVR_PASSWORD_ENCODED='url-encoded-dvr-password'
+```
+
+For the FastAPI login gate and RTSP workers, also set:
+
+```bash
+export HIKVISION_DVR_PASSWORD='plain-dvr-password'
+export SCN_SESSION_SECRET='generate-a-long-random-value'
+```
+
+On Ubuntu, place these in an ignored local file such as `server/.env` and source it before manual runs, or install the systemd services which read the environment file.
+
 ## Run MediaMTX Manually
 
 From the Ubuntu repo:
 
 ```bash
+set -a
+. ~/topteksecurity/server/.env
+set +a
 ~/mediamtx/mediamtx ~/topteksecurity/deploy/mediamtx.yml
 ```
 
@@ -151,6 +175,9 @@ Run the FastAPI app on the Ubuntu LAN:
 
 ```bash
 cd ~/topteksecurity/server
+set -a
+. ./.env
+set +a
 source /home/expiredsession/securitycameranetwork/server/.venv/bin/activate
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
@@ -185,8 +212,9 @@ export MEDIAMTX_WEBRTC_SCHEME=http
 - H.264 PPS/SPS/CABAC decode errors: DVR codec, smart codec, or platform encryption is still wrong.
 - `unsupported packetization mode: 0` in MediaMTX logs: use the committed FFmpeg republish config instead of direct `source: rtsp://...` paths.
 - FFmpeg works but WebRTC fails: check `journalctl -u mediamtx -f` or the manual MediaMTX terminal output.
+- WHEP POST returns `404` with `no stream is available`: the WHEP endpoint exists, but MediaMTX has no active publisher for that camera path. Check the FFmpeg publisher processes, confirm `ping 192.168.0.222` and `nc -vz 192.168.0.222 554`, then restart MediaMTX.
 - DVR unreachable: confirm the temporary `192.168.0.200/24` address is still on the Ubuntu interface.
 - Dashboard shows RTSP online but video unavailable: FastAPI can decode the RTSP stream, but the browser cannot reach MediaMTX on port `8889`.
 - Browser blocks playback from HTTPS dashboard to HTTP MediaMTX: serve MediaMTX over HTTPS or keep the dashboard on HTTP for local LAN testing.
 
-Do not expose the DVR ports or MediaMTX directly to the internet. Use VPN/Tailscale or a secured reverse proxy for remote access.
+Do not port-forward or publicly expose FastAPI, the DVR, MediaMTX, or recording files. Use LAN/Tailscale/VPN access, or a secured reverse proxy you trust.

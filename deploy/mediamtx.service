@@ -6,6 +6,7 @@ After=network.target
 User=expiredsession
 Group=expiredsession
 WorkingDirectory=/home/expiredsession/mediamtx
+EnvironmentFile=-/home/expiredsession/topteksecurity/server/.env
 ExecStart=/home/expiredsession/mediamtx/mediamtx /home/expiredsession/topteksecurity/deploy/mediamtx.yml
 Restart=always
 RestartSec=3

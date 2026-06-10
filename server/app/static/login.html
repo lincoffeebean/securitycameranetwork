@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Security Camera Login</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Arial, Helvetica, sans-serif;
+        background: #101418;
+        color: #f5f7fa;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        display: grid;
+        min-height: 100vh;
+        margin: 0;
+        place-items: center;
+        background: #101418;
+      }
+
+      main {
+        display: grid;
+        gap: 18px;
+        width: min(92vw, 420px);
+        border: 1px solid #34404d;
+        border-radius: 8px;
+        background: #151c23;
+        padding: 24px;
+      }
+
+      h1,
+      p {
+        margin: 0;
+      }
+
+      p {
+        color: #c7d1dc;
+      }
+
+      label {
+        display: grid;
+        gap: 8px;
+        font-weight: 700;
+      }
+
+      input,
+      button {
+        width: 100%;
+        min-height: 46px;
+        border-radius: 8px;
+        font: inherit;
+      }
+
+      input {
+        border: 1px solid #34404d;
+        background: #10161d;
+        color: #f5f7fa;
+        padding: 0 12px;
+      }
+
+      button {
+        border: 0;
+        background: #5ec4ff;
+        color: #071018;
+        cursor: pointer;
+        font-weight: 800;
+      }
+
+      .status {
+        min-height: 22px;
+        color: #c7d1dc;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Security Camera Network</h1>
+      <p>Enter the local DVR password to continue.</p>
+      <label>
+        DVR Password
+        <input id="password" type="password" autocomplete="current-password" autofocus>
+      </label>
+      <button id="login" type="button">Unlock</button>
+      <p id="status" class="status"></p>
+    </main>
+
+    <script>
+      const passwordInput = document.getElementById("password");
+      const loginButton = document.getElementById("login");
+      const statusText = document.getElementById("status");
+      const nextUrl = new URLSearchParams(window.location.search).get("next") || "/";
+
+      async function login() {
+        const password = passwordInput.value;
+        if (!password) {
+          statusText.textContent = "Enter the DVR password.";
+          return;
+        }
+
+        loginButton.disabled = true;
+        statusText.textContent = "Checking...";
+        try {
+          const response = await fetch("/api/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password })
+          });
+          if (!response.ok) {
+            throw new Error(response.status === 401 ? "Invalid password." : "Login failed.");
+          }
+          passwordInput.value = "";
+          window.location.href = nextUrl.startsWith("/") ? nextUrl : "/";
+        } catch (error) {
+          statusText.textContent = error.message;
+          loginButton.disabled = false;
+        }
+      }
+
+      loginButton.addEventListener("click", login);
+      passwordInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          login();
+        }
+      });
+    </script>
+  </body>
+</html>

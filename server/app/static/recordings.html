@@ -310,15 +310,35 @@
             for (const recording of items) {
               const item = document.createElement("article");
               item.className = "recording-item";
-              item.innerHTML = `
-                <div>
-                  <a href="${recording.relative_path}" target="_blank" rel="noopener">${recording.display_name}</a>
-                  <div class="meta">${recording.filename}</div>
-                </div>
-                <div class="meta">${formatTimestamp(recording.timestamp)}</div>
-                <div class="meta">${formatFileSize(recording.filesize_bytes)}</div>
-                <div><a href="${recording.relative_path}" target="_blank" rel="noopener">Open</a></div>
-              `;
+
+              const titleBlock = document.createElement("div");
+              const titleLink = document.createElement("a");
+              titleLink.href = recording.relative_path;
+              titleLink.target = "_blank";
+              titleLink.rel = "noopener";
+              titleLink.textContent = recording.display_name;
+              const filename = document.createElement("div");
+              filename.className = "meta";
+              filename.textContent = recording.filename;
+              titleBlock.append(titleLink, filename);
+
+              const timestamp = document.createElement("div");
+              timestamp.className = "meta";
+              timestamp.textContent = formatTimestamp(recording.timestamp);
+
+              const filesize = document.createElement("div");
+              filesize.className = "meta";
+              filesize.textContent = formatFileSize(recording.filesize_bytes);
+
+              const openBlock = document.createElement("div");
+              const openLink = document.createElement("a");
+              openLink.href = recording.relative_path;
+              openLink.target = "_blank";
+              openLink.rel = "noopener";
+              openLink.textContent = "Open";
+              openBlock.append(openLink);
+
+              item.append(titleBlock, timestamp, filesize, openBlock);
               list.append(item);
             }
 
