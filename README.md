@@ -121,6 +121,8 @@ The implementation deliberately stays small: one FastAPI application, static HTM
 
 The supported installer targets Ubuntu with Bash, Python 3.10+, and `apt`. If startup on boot is enabled, setup creates `/etc/systemd/system/securitycameranetwork.service`, runs it as the installing user, and enables restart-on-failure.
 
+Setup functionally tests Python virtual-environment support before installation. On Ubuntu/Debian, it offers to install `python3-venv` (or the active Python version's matching package) when needed and automatically repairs an incomplete `.venv` from a previous attempt.
+
 Simple LAN mode listens on `0.0.0.0` using the selected port. HTTPS mode binds FastAPI to localhost and uses Caddy as the LAN-facing reverse proxy. Caddy's internal CA certificate must be trusted on each client device.
 
 If UFW is active, setup opens only the selected LAN HTTP port or HTTPS port 443. It does not configure router port forwarding or expose the server publicly.

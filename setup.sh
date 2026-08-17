@@ -13,14 +13,11 @@ info() { printf '  %s\n' "$*"; }
 ok() { printf '\n[OK] %s\n' "$*"; }
 fail() { printf '\n[ERROR] %s\n' "$*" >&2; exit 1; }
 
-if [[ ${EUID:-$(id -u)} -eq 0 && -n "${SUDO_USER:-}" ]]; then
-    fail "Run ./setup.sh as your normal user, not with sudo. Setup will request administrator access when needed."
-fi
-
 run_root() {
     if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
         "$@"
     elif command -v sudo >/dev/null 2>&1; then
+        sudo -v || fail "Administrator access was not granted."
         sudo "$@"
     else
         fail "This step needs administrator access, but sudo is unavailable."
@@ -60,25 +57,113 @@ detect_lan_ip() {
     printf '%s' "$address"
 }
 
-ensure_python() {
-    if ! command -v python3 >/dev/null 2>&1 || ! python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then
-        info "Installing Python 3.10+ and virtual-environment support..."
-        command -v apt-get >/dev/null 2>&1 || fail "Python 3.10+ is required. Install it and run setup again."
-        run_root apt-get update || fail "Could not update Ubuntu package lists."
-        run_root apt-get install -y python3 python3-venv python3-pip || fail "Could not install Python."
+is_debian_family() {
+    local release_file="${1:-/etc/os-release}"
+    [[ -r "$release_file" ]] || return 1
+    grep -Eiq '^(ID|ID_LIKE)=.*(debian|ubuntu)' "$release_file"
+}
+
+venv_available() {
+    local python_bin="${1:-python3}" probe_dir probe_python result=0
+    probe_dir="$(mktemp -d)" || return 1
+    "$python_bin" -m venv "$probe_dir/venv" >/dev/null 2>&1 || result=$?
+    probe_python="$probe_dir/venv/bin/python"
+    [[ -x "$probe_python" ]] || probe_python="$probe_dir/venv/Scripts/python.exe"
+    if ((result == 0)); then
+        [[ -x "$probe_python" ]] \
+            && "$probe_python" -c 'import ensurepip' >/dev/null 2>&1 \
+            && "$probe_python" -m pip --version >/dev/null 2>&1 \
+            || result=1
+    fi
+    rm -rf -- "$probe_dir"
+    return "$result"
+}
+
+versioned_venv_package() {
+    python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}-venv")'
+}
+
+install_debian_package() {
+    local package="$1" fallback="${2:-}" release_file="${3:-/etc/os-release}"
+    is_debian_family "$release_file" || fail "$package is required. Install the equivalent package for your distribution, then rerun ./setup.sh."
+    command -v apt-get >/dev/null 2>&1 || fail "apt-get is unavailable. Install $package manually, then rerun ./setup.sh."
+
+    printf '\nThe installer needs to install:\n  %s\n\n' "$package"
+    if ! confirm "Install required packages now?" Y; then
+        fail "Installation declined. Install $package for your system, then rerun ./setup.sh."
     fi
 
-    if ! python3 -m venv --help >/dev/null 2>&1; then
-        command -v apt-get >/dev/null 2>&1 || fail "Python venv support is required."
-        run_root apt-get install -y python3-venv || fail "Could not install python3-venv."
+    info "Updating package information..."
+    run_root apt-get update || fail "apt-get update failed. Check the output above and your network connection."
+    info "Installing $package..."
+    if run_root apt-get install -y "$package"; then
+        ok "$package installed"
+        return
     fi
+
+    [[ -n "$fallback" && "$fallback" != "$package" ]] || fail "Could not install $package. Check the package-manager output above."
+    info "$package was unavailable; trying $fallback for the active Python version..."
+    run_root apt-get install -y "$fallback" || fail "Could not install $package or $fallback. Install Python venv support manually, then rerun ./setup.sh."
+    ok "$fallback installed"
+}
+
+check_system_requirements() {
+    local version fallback
+    printf '\nChecking system requirements...\n\n'
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        printf '[MISSING] Python 3\n'
+        install_debian_package python3
+    fi
+
+    version="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" || fail "Python 3 could not be started."
+    python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 10))' || fail "Python 3.10 or newer is required; found Python $version."
+    printf '[OK] Python %s\n' "$version"
+
+    if venv_available python3; then
+        printf '[OK] Python virtual environment support\n'
+        return
+    fi
+
+    printf '[MISSING] Python virtual environment support\n'
+    fallback="$(versioned_venv_package)"
+    install_debian_package python3-venv "$fallback"
+    venv_available python3 || fail "Python virtual environments still cannot be created after package installation. Try installing $fallback manually."
+    printf '[OK] Python virtual environment support\n'
+}
+
+venv_is_valid() {
+    [[ -x "$VENV_DIR/bin/python" ]] \
+        && "$VENV_DIR/bin/python" -c 'import ensurepip, sys; raise SystemExit(sys.prefix == sys.base_prefix)' >/dev/null 2>&1 \
+        && "$VENV_DIR/bin/python" -m pip --version >/dev/null 2>&1
+}
+
+prepare_virtualenv() {
+    if venv_is_valid; then
+        ok "Reusing existing Python environment"
+        return
+    fi
+
+    if [[ -e "$VENV_DIR" ]]; then
+        [[ "$VENV_DIR" == "$ROOT_DIR/.venv" && "$VENV_DIR" != "/.venv" ]] || fail "Refusing to remove unexpected environment path: $VENV_DIR"
+        info "Found incomplete Python environment from a previous setup attempt."
+        info "Recreating .venv..."
+        rm -rf -- "$VENV_DIR" || fail "Could not remove the incomplete environment at $VENV_DIR."
+    else
+        info "Creating Python environment..."
+    fi
+
+    python3 -m venv "$VENV_DIR" || fail "Could not create $VENV_DIR even though venv support passed its preflight check."
+    venv_is_valid || fail "The new Python environment is incomplete: $VENV_DIR"
+    ok "Python environment created"
 }
 
 install_python_app() {
-    info "Creating Python environment..."
-    python3 -m venv "$VENV_DIR" || fail "Could not create $VENV_DIR."
-    "$VENV_DIR/bin/python" -m pip install --upgrade pip >/dev/null || fail "Could not update pip."
+    prepare_virtualenv
+    info "Installing Python dependencies..."
+    "$VENV_DIR/bin/python" -m pip install --upgrade pip >/dev/null || fail "Could not update pip inside .venv."
     "$VENV_DIR/bin/python" -m pip install -r "$ROOT_DIR/server/requirements.txt" || fail "Dependency installation failed."
+    ok "Python dependencies installed"
 }
 
 write_config() {
@@ -130,10 +215,7 @@ WantedBy=multi-user.target"
 
 configure_https() {
     if ! command -v caddy >/dev/null 2>&1; then
-        command -v apt-get >/dev/null 2>&1 || fail "Caddy is required for HTTPS. Install Caddy and rerun setup."
-        info "Installing Caddy..."
-        run_root apt-get update || fail "Could not update Ubuntu package lists."
-        run_root apt-get install -y caddy || fail "Could not install Caddy."
+        install_debian_package caddy
     fi
     local caddy_config caddy_fragment
     caddy_config="https://$lan_ip {
@@ -150,11 +232,17 @@ configure_https() {
     run_root systemctl reload caddy || fail "Could not reload Caddy."
 }
 
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
+
+if [[ ${EUID:-$(id -u)} -eq 0 && -n "${SUDO_USER:-}" ]]; then
+    fail "Run ./setup.sh as your normal user, not with sudo. Setup will request administrator access when needed."
+fi
+
 printf '\n========================================\n'
 printf '  Security Camera Network Setup\n'
 printf '========================================\n\n'
-
-ensure_python
 
 repair=false
 if [[ -f "$CONFIG_FILE" ]]; then
@@ -167,6 +255,8 @@ if [[ -f "$CONFIG_FILE" ]]; then
         *) exit 0 ;;
     esac
 fi
+
+check_system_requirements
 
 lan_ip="$(detect_lan_ip)"
 [[ -n "$lan_ip" ]] || lan_ip="LAN-IP-NOT-DETECTED"
@@ -222,6 +312,11 @@ else
     fi
     [[ "$mode" == 2 ]] && https=true || https=false
     [[ "$https" == true ]] && host=127.0.0.1 || host=0.0.0.0
+fi
+
+if [[ "$start_on_boot" == true ]]; then
+    command -v systemctl >/dev/null 2>&1 || fail "systemd is required for start-on-boot but is unavailable. Choose no or install systemd, then rerun setup."
+    printf '[OK] systemd\n'
 fi
 
 install_python_app
