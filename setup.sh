@@ -16,7 +16,13 @@ CADDY_SOURCE="${SECURITYCAM_CADDY_SOURCE:-/etc/apt/sources.list.d/caddy-stable.l
 
 info() { printf '  %s\n' "$*"; }
 ok() { printf '\n[OK] %s\n' "$*"; }
-fail() { printf '\n[ERROR] %s\n' "$*" >&2; exit 1; }
+fail() {
+    if [[ "${TRANSACTION_ACTIVE:-false}" == true && -z "${FAILURE_REASON:-}" ]]; then
+        FAILURE_REASON="${CURRENT_STAGE_REASON:-$*}"
+    fi
+    printf '\n[ERROR] %s\n' "$*" >&2
+    exit 1
+}
 
 run_root() {
     if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
@@ -205,10 +211,35 @@ with open(sys.argv[1], "w", encoding="utf-8") as file:
 PY
 }
 
+systemd_escape_path() {
+    python3 - "$1" <<'PY'
+import sys
+
+path = sys.argv[1]
+if not path.startswith("/") or "\0" in path or "\n" in path or "\r" in path:
+    raise SystemExit(1)
+
+safe = b"/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+result = []
+for byte in path.encode("utf-8"):
+    if byte == ord("%"):
+        result.append("%%")
+    elif byte in safe:
+        result.append(chr(byte))
+    else:
+        result.append(f"\\x{byte:02x}")
+print("".join(result))
+PY
+}
+
 write_systemd_unit() {
-    local output_file="$1" config_path="$2" install_user install_group
+    local output_file="$1" config_path="$2" install_user install_group root_path config_value python_path server_path
     install_user="${SUDO_USER:-$(id -un)}"
     install_group="$(id -gn "$install_user")"
+    root_path="$(systemd_escape_path "$ROOT_DIR")" || fail "The repository path cannot be represented safely in a systemd service."
+    config_value="$(systemd_escape_path "$config_path")" || fail "The configuration path cannot be represented safely in a systemd service."
+    python_path="$(systemd_escape_path "$VENV_DIR/bin/python")" || fail "The Python path cannot be represented safely in a systemd service."
+    server_path="$(systemd_escape_path "$ROOT_DIR/server")" || fail "The server path cannot be represented safely in a systemd service."
     cat >"$output_file" <<EOF
 [Unit]
 Description=Security Camera Network
@@ -219,9 +250,9 @@ Wants=network-online.target
 Type=simple
 User=$install_user
 Group=$install_group
-WorkingDirectory="$ROOT_DIR"
-Environment="SECURITYCAM_CONFIG=$config_path"
-ExecStart="$ROOT_DIR/securitycam" run
+WorkingDirectory=$root_path
+Environment=SECURITYCAM_CONFIG=$config_value
+ExecStart=$python_path -m uvicorn app.main:app --app-dir $server_path --host $host --port $port
 Restart=on-failure
 RestartSec=3
 
@@ -322,12 +353,13 @@ PREVIOUS_RUNNING=false
 PREVIOUS_CADDY_FILE_EXISTS=false
 PREVIOUS_CADDY_FRAGMENT_EXISTS=false
 PREVIOUS_CADDY_ACTIVE=false
-PREVIOUS_CADDY_AVAILABLE=false
 PREVIOUS_CADDY_KEY_EXISTS=false
 PREVIOUS_CADDY_SOURCE_EXISTS=false
 CADDY_INSTALL_COMPLETED=false
 PREVIOUS_ADDRESS=""
 CUTOVER_STARTED=false
+CURRENT_STAGE_REASON=""
+FAILURE_REASON=""
 
 begin_transaction() {
     mkdir -p "$CONFIG_DIR" || fail "Could not create $CONFIG_DIR."
@@ -359,9 +391,6 @@ begin_transaction() {
     if [[ -f "$CADDY_SOURCE" ]]; then
         PREVIOUS_CADDY_SOURCE_EXISTS=true
         run_root cat "$CADDY_SOURCE" >"$TRANSACTION_DIR/caddy-source.previous" || fail "Could not preserve the current Caddy apt source."
-    fi
-    if command -v caddy >/dev/null 2>&1 && caddy version >/dev/null 2>&1; then
-        PREVIOUS_CADDY_AVAILABLE=true
     fi
     if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet caddy 2>/dev/null; then
         PREVIOUS_CADDY_ACTIVE=true
@@ -455,9 +484,10 @@ rollback_transaction() {
     rm -rf -- "$TRANSACTION_DIR"
     if [[ "$PREVIOUS_CONFIG_EXISTS" == true ]]; then
         printf '\nYour previous configuration has been restored.\n' >&2
-        if [[ "$repair" == true && "$(config_value_from "$CONFIG_FILE" https)" == true && "$PREVIOUS_CADDY_AVAILABLE" == false ]]; then
-            printf 'HTTPS remains unavailable because Caddy could not be restored.\n' >&2
-        elif [[ "$PREVIOUS_RUNNING" == true && "$restored_running" == true ]]; then
+        if [[ -n "$FAILURE_REASON" ]]; then
+            printf '\nReason:\n  %s\n\nYour existing server configuration remains unchanged.\n' "$FAILURE_REASON" >&2
+        fi
+        if [[ "$PREVIOUS_RUNNING" == true && "$restored_running" == true ]]; then
             printf '\nSecurity Camera Network is still available at:\n%s\n' "$PREVIOUS_ADDRESS" >&2
         elif [[ "$PREVIOUS_RUNNING" == true ]]; then
             printf 'The previous configuration was restored, but the server could not be restarted automatically. Run ./securitycam start.\n' >&2
@@ -515,12 +545,56 @@ apply_caddy_candidate() {
 }
 
 validate_systemd_unit() {
-    local unit_file="$1" verify_log="$TRANSACTION_DIR/systemd-verify.log"
-    command -v systemd-analyze >/dev/null 2>&1 || return
-    if ! systemd-analyze verify "$unit_file" >"$verify_log" 2>&1; then
-        cat "$verify_log" >&2
-        fail "The generated systemd service is invalid; it was not applied."
+    local unit_file="$1" config_path="$2" quiet="${3:-false}" verify_log relevant_log unit_name
+    local root_path config_value python_path server_path expected_exec
+    verify_log="$TRANSACTION_DIR/systemd-verify.log"
+    relevant_log="$TRANSACTION_DIR/systemd-verify-relevant.log"
+    unit_name="$(basename "$unit_file")"
+
+    [[ "$quiet" == true ]] || info "Validating service configuration..."
+    [[ "$ROOT_DIR" == /* && -d "$ROOT_DIR" ]] || fail "The generated Security Camera Network service is invalid."
+    [[ "$config_path" == /* && -f "$config_path" ]] || fail "The generated Security Camera Network service is invalid."
+    [[ "$VENV_DIR/bin/python" == /* && -x "$VENV_DIR/bin/python" ]] || fail "The generated Security Camera Network service is invalid."
+    [[ "$ROOT_DIR/server" == /* && -d "$ROOT_DIR/server" ]] || fail "The generated Security Camera Network service is invalid."
+
+    root_path="$(systemd_escape_path "$ROOT_DIR")" || fail "The generated Security Camera Network service is invalid."
+    config_value="$(systemd_escape_path "$config_path")" || fail "The generated Security Camera Network service is invalid."
+    python_path="$(systemd_escape_path "$VENV_DIR/bin/python")" || fail "The generated Security Camera Network service is invalid."
+    server_path="$(systemd_escape_path "$ROOT_DIR/server")" || fail "The generated Security Camera Network service is invalid."
+    expected_exec="ExecStart=$python_path -m uvicorn app.main:app --app-dir $server_path --host $host --port $port"
+    grep -Fxq "WorkingDirectory=$root_path" "$unit_file" \
+        && grep -Fxq "Environment=SECURITYCAM_CONFIG=$config_value" "$unit_file" \
+        && grep -Fxq "$expected_exec" "$unit_file" \
+        || fail "The generated Security Camera Network service is invalid."
+
+    if command -v systemd-analyze >/dev/null 2>&1; then
+        if ! systemd-analyze verify "$unit_file" >"$verify_log" 2>&1; then
+            awk -v name="$unit_name" -v service="$SERVICE_NAME" '
+                { line[NR] = $0 }
+                END {
+                    for (i = 1; i <= NR; i++) {
+                        if (index(line[i], name) || index(line[i], service)) {
+                            keep[i] = 1
+                            if (line[i-1] ~ /(WorkingDirectory=|ExecStart=|Environment=|not absolute|not executable|fatal error|bad unit file)/) keep[i-1] = 1
+                            if (line[i+1] ~ /(WorkingDirectory=|ExecStart=|Environment=|not absolute|not executable|fatal error|bad unit file)/) keep[i+1] = 1
+                        }
+                    }
+                    for (i = 1; i <= NR; i++) if (keep[i]) print line[i]
+                }
+            ' "$verify_log" >"$relevant_log"
+            if [[ -s "$relevant_log" ]]; then
+                if [[ "${SECURITYCAM_VERBOSE:-0}" == 1 ]]; then
+                    cat "$verify_log" >&2
+                else
+                    cat "$relevant_log" >&2
+                fi
+                fail "The generated Security Camera Network service is invalid."
+            fi
+            [[ -s "$verify_log" ]] || fail "systemd-analyze could not validate the generated Security Camera Network service."
+        fi
+        [[ "${SECURITYCAM_VERBOSE:-0}" != 1 || ! -s "$verify_log" ]] || cat "$verify_log" >&2
     fi
+    [[ "$quiet" == true ]] || ok "Service configuration valid"
 }
 
 wait_for_health() {
@@ -554,7 +628,7 @@ finish_transaction() {
     mv -f "$PENDING_CONFIG" "$CONFIG_FILE" || fail "Could not activate the validated configuration."
     if [[ "$start_on_boot" == true ]]; then
         write_systemd_unit "$final_unit" "$CONFIG_FILE"
-        validate_systemd_unit "$final_unit"
+        validate_systemd_unit "$final_unit" "$CONFIG_FILE" true
         run_root install -m 0644 "$final_unit" "$SERVICE_FILE" || fail "Could not finalize the systemd service."
         run_root systemctl daemon-reload || fail "systemd could not load the finalized service."
     fi
@@ -654,6 +728,7 @@ install_python_app
 
 mkdir -p "$recordings_path" || fail "The recordings directory could not be created: $recordings_path"
 begin_transaction
+CURRENT_STAGE_REASON="Candidate application configuration is invalid."
 write_config "$PENDING_CONFIG"
 
 (
@@ -661,21 +736,26 @@ write_config "$PENDING_CONFIG"
 ) || fail "FastAPI application validation failed."
 
 if [[ "$start_on_boot" == true ]]; then
+    CURRENT_STAGE_REASON="Invalid systemd service configuration."
     write_systemd_unit "$TRANSACTION_DIR/securitycameranetwork.pending.service" "$PENDING_CONFIG"
-    validate_systemd_unit "$TRANSACTION_DIR/securitycameranetwork.pending.service"
+    validate_systemd_unit "$TRANSACTION_DIR/securitycameranetwork.pending.service" "$PENDING_CONFIG"
 fi
 
 if [[ "$https" == true ]]; then
+    CURRENT_STAGE_REASON="Caddy could not be installed."
     [[ "$lan_ip" != "LAN-IP-NOT-DETECTED" ]] || fail "HTTPS setup needs a detected LAN IP."
     install_caddy_official
+    CURRENT_STAGE_REASON="Invalid Caddy configuration."
     prepare_caddy_candidate
 elif [[ -f "$CADDY_FRAGMENT" ]]; then
+    CURRENT_STAGE_REASON="The existing Caddy configuration could not be updated safely."
     command -v caddy >/dev/null 2>&1 && caddy version >/dev/null 2>&1 \
         || fail "The existing HTTPS configuration cannot be removed safely because Caddy is unavailable."
     prepare_caddy_candidate
 fi
 
 previous_port=""
+CURRENT_STAGE_REASON="The requested server port is unavailable."
 [[ "$PREVIOUS_CONFIG_EXISTS" == false ]] || previous_port="$(config_value_from "$CONFIG_FILE" port)"
 if command -v ss >/dev/null 2>&1 \
     && ss -H -ltn "sport = :$port" 2>/dev/null | grep -q . \
@@ -684,6 +764,7 @@ if command -v ss >/dev/null 2>&1 \
 fi
 
 CUTOVER_STARTED=true
+CURRENT_STAGE_REASON="The previous service could not be stopped cleanly."
 if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
     run_root systemctl stop "$SERVICE_NAME" || fail "Could not stop the current server for reconfiguration."
 elif [[ "$PREVIOUS_RUNNING" == true && "$PREVIOUS_CONFIG_EXISTS" == true ]]; then
@@ -691,6 +772,7 @@ elif [[ "$PREVIOUS_RUNNING" == true && "$PREVIOUS_CONFIG_EXISTS" == true ]]; the
 fi
 
 if [[ "$start_on_boot" == true ]]; then
+    CURRENT_STAGE_REASON="The staged systemd service could not be started."
     run_root install -m 0644 "$TRANSACTION_DIR/securitycameranetwork.pending.service" "$SERVICE_FILE" \
         || fail "Could not stage the systemd service."
     run_root systemctl daemon-reload || fail "systemd could not load the staged service."
@@ -706,8 +788,11 @@ else
         || fail "The staged FastAPI server could not start."
 fi
 
+CURRENT_STAGE_REASON="The validated Caddy configuration could not be applied."
 apply_caddy_candidate
+CURRENT_STAGE_REASON="The new configuration failed its local health check."
 wait_for_health
+CURRENT_STAGE_REASON="The validated configuration could not be finalized."
 finish_transaction
 
 if command -v ufw >/dev/null 2>&1 && run_root ufw status 2>/dev/null | grep -q '^Status: active'; then
