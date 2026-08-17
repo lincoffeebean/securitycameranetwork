@@ -25,6 +25,13 @@ server/app/static/caddy-root.crt
 recordings/*
 !recordings/.gitkeep
 
+# Machine-local configuration and generated reports
+.securitycam/
+graphify-out/
+config.json
+logs/
+*.log
+
 # VS Code and system junk
 .vscode/
 .DS_Store

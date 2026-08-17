@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+
+set -u
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${SECURITYCAM_CONFIG:-$ROOT_DIR/.securitycam/config.json}"
+VENV_PYTHON="$ROOT_DIR/.venv/bin/python"
+SERVICE_NAME="securitycameranetwork"
+SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
+PID_FILE="$ROOT_DIR/.securitycam/server.pid"
+LOG_FILE="$ROOT_DIR/.securitycam/server.log"
+
+fail() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
+
+run_root() {
+    if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+        "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo "$@"
+    else
+        fail "This command needs administrator access, but sudo is unavailable."
+    fi
+}
+
+require_install() {
+    [[ -f "$CONFIG_FILE" ]] || fail "Not configured. Run ./setup.sh first."
+    [[ -x "$VENV_PYTHON" ]] || fail "Python environment is missing. Run ./setup.sh and choose Repair."
+}
+
+config_get() {
+    "$VENV_PYTHON" - "$CONFIG_FILE" "$1" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as file:
+    value = json.load(file).get(sys.argv[2], "")
+print(str(value).lower() if isinstance(value, bool) else value)
+PY
+}
+
+lan_ip() {
+    local address=""
+    if command -v ip >/dev/null 2>&1; then
+        address="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i == "src") {print $(i+1); exit}}')"
+    fi
+    [[ -n "$address" ]] || address="$(hostname -I 2>/dev/null | tr ' ' '\n' | awk '/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/ {print; exit}')"
+    printf '%s' "${address:-localhost}"
+}
+
+has_service() {
+    [[ -f "$SERVICE_FILE" ]] && command -v systemctl >/dev/null 2>&1
+}
+
+pid_running() {
+    [[ -f "$PID_FILE" ]] || return 1
+    local pid
+    pid="$(cat "$PID_FILE")"
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    [[ -r "/proc/$pid/cmdline" ]] || return 1
+    tr '\0' ' ' <"/proc/$pid/cmdline" | grep -Fq "$ROOT_DIR/server"
+}
+
+start_server() {
+    require_install
+    if has_service; then
+        run_root systemctl start "$SERVICE_NAME" || fail "Service failed to start. Run ./securitycam logs."
+    else
+        pid_running && { printf 'Server is already running.\n'; return; }
+        mkdir -p "$(dirname "$PID_FILE")"
+        SECURITYCAM_CONFIG="$CONFIG_FILE" nohup "$ROOT_DIR/securitycam" run >>"$LOG_FILE" 2>&1 &
+        echo $! >"$PID_FILE"
+        sleep 1
+        pid_running || fail "Server failed to start. The configured port may be in use; see $LOG_FILE."
+    fi
+    printf 'Security Camera Network started.\n'
+}
+
+stop_server() {
+    require_install
+    if has_service; then
+        run_root systemctl stop "$SERVICE_NAME" || fail "Service failed to stop."
+    elif pid_running; then
+        kill "$(cat "$PID_FILE")"
+        rm -f "$PID_FILE"
+    else
+        printf 'Server is not running.\n'
+        return
+    fi
+    printf 'Security Camera Network stopped.\n'
+}
+
+show_status() {
+    require_install
+    local state="Stopped"
+    if has_service; then
+        systemctl is-active --quiet "$SERVICE_NAME" && state="Running"
+    elif pid_running; then
+        state="Running"
+    fi
+    local scheme address
+    [[ "$(config_get https)" == true ]] && scheme=https || scheme=http
+    address="$scheme://$(lan_ip)"
+    [[ "$scheme" == https ]] || address="$address:$(config_get port)"
+    printf 'Status:  %s\nAddress: %s\n' "$state" "$address"
+}
+
+show_logs() {
+    require_install
+    if has_service; then
+        run_root journalctl -u "$SERVICE_NAME" -n 100 --no-pager
+    elif [[ -f "$LOG_FILE" ]]; then
+        tail -n 100 "$LOG_FILE"
+    else
+        printf 'No logs yet.\n'
+    fi
+}
+
+show_recordings() {
+    require_install
+    local path
+    path="$(config_get recordings_path)"
+    printf 'Recordings: %s\n' "$path"
+    find "$path" -type f -printf '%TY-%Tm-%Td %TH:%TM  %s bytes  %p\n' 2>/dev/null | sort -r | head -20
+}
+
+update_installation() {
+    require_install
+    git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail "This installation is not a Git repository."
+    [[ -z "$(git -C "$ROOT_DIR" status --porcelain)" ]] || fail "Local source changes exist. Commit or stash them before updating."
+    local was_running=false
+    if has_service && systemctl is-active --quiet "$SERVICE_NAME"; then was_running=true; fi
+    if ! has_service && pid_running; then was_running=true; fi
+    [[ "$was_running" == false ]] || stop_server
+    if ! git -C "$ROOT_DIR" pull --ff-only; then
+        [[ "$was_running" == false ]] || start_server
+        fail "Update failed; local files were not discarded."
+    fi
+    "$VENV_PYTHON" -m pip install -r "$ROOT_DIR/server/requirements.txt" || fail "Dependencies could not be updated."
+    [[ "$was_running" == false ]] || start_server
+    printf 'Security Camera Network updated successfully.\n'
+}
+
+uninstall_service() {
+    require_install
+    read -r -p 'Remove the service and local configuration? Recordings and source code will be kept. [y/N] ' answer
+    [[ "$answer" =~ ^[Yy]$ ]] || return
+    if has_service; then
+        run_root systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
+        run_root rm -f "$SERVICE_FILE"
+        run_root systemctl daemon-reload
+    else
+        pid_running && stop_server || true
+    fi
+    if [[ -f /etc/caddy/Caddyfile.d/securitycameranetwork.caddy ]]; then
+        run_root rm -f /etc/caddy/Caddyfile.d/securitycameranetwork.caddy
+        command -v caddy >/dev/null 2>&1 && run_root systemctl reload caddy >/dev/null 2>&1 || true
+    fi
+    rm -f "$CONFIG_FILE" "$PID_FILE" "$LOG_FILE"
+    printf 'Service and local configuration removed. Recordings were preserved.\n'
+}
+
+interactive_menu() {
+    while true; do
+        printf '\nSecurity Camera Network\n\n'
+        show_status 2>/dev/null || printf 'Status: Not configured\n'
+        printf '\n[1] Start server\n[2] Stop server\n[3] Restart server\n[4] View status\n[5] Change configuration\n[6] View recordings\n[7] View logs\n[8] Update\n[9] Uninstall\n[0] Exit\n\n'
+        read -r -p '> ' choice
+        case "$choice" in
+            1) start_server ;;
+            2) stop_server ;;
+            3) stop_server; start_server ;;
+            4) show_status ;;
+            5) exec "$ROOT_DIR/setup.sh" ;;
+            6) show_recordings ;;
+            7) show_logs ;;
+            8) update_installation ;;
+            9) uninstall_service ;;
+            0) return ;;
+            *) printf 'Choose 0-9.\n' ;;
+        esac
+    done
+}
+
+command="${1:-menu}"
+case "$command" in
+    menu) interactive_menu ;;
+    start) start_server ;;
+    stop) stop_server ;;
+    restart) stop_server; start_server ;;
+    status) show_status ;;
+    logs) show_logs ;;
+    recordings) show_recordings ;;
+    update) update_installation ;;
+    config) exec "$ROOT_DIR/setup.sh" ;;
+    uninstall) uninstall_service ;;
+    run)
+        require_install
+        exec "$VENV_PYTHON" -m uvicorn app.main:app --app-dir "$ROOT_DIR/server" --host "$(config_get host)" --port "$(config_get port)"
+        ;;
+    *) fail "Unknown command: $command" ;;
+esac

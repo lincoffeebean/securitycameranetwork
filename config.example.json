@@ -1,0 +1,8 @@
+{
+  "host": "0.0.0.0",
+  "port": 8000,
+  "recordings_path": "recordings",
+  "max_storage_gb": null,
+  "https": false,
+  "start_on_boot": true
+}

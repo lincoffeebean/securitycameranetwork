@@ -2,7 +2,9 @@ import asyncio
 import base64
 import binascii
 from datetime import datetime
+import json
 import math
+import os
 import re
 import time
 from pathlib import Path
@@ -26,7 +28,28 @@ APP_DIR = Path(__file__).resolve().parent
 SERVER_DIR = APP_DIR.parent
 PROJECT_DIR = SERVER_DIR.parent
 STATIC_DIR = APP_DIR / "static"
-RECORDINGS_DIR = PROJECT_DIR / "recordings"
+
+
+def load_server_config() -> dict[str, Any]:
+    config_path = Path(
+        os.environ.get("SECURITYCAM_CONFIG", PROJECT_DIR / ".securitycam" / "config.json")
+    ).expanduser()
+    try:
+        return json.loads(config_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+SERVER_CONFIG = load_server_config()
+recordings_path_value = SERVER_CONFIG.get("recordings_path", "recordings")
+configured_recordings_path = Path(
+    recordings_path_value if isinstance(recordings_path_value, str) else "recordings"
+).expanduser()
+RECORDINGS_DIR = (
+    configured_recordings_path
+    if configured_recordings_path.is_absolute()
+    else PROJECT_DIR / configured_recordings_path
+)
 RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
