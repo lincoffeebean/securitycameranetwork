@@ -125,6 +125,8 @@ Setup functionally tests Python virtual-environment support before installation.
 
 Simple LAN mode listens on `0.0.0.0` using the selected port. HTTPS mode binds FastAPI to localhost and uses Caddy as the LAN-facing reverse proxy. Caddy's internal CA certificate must be trusted on each client device.
 
+When Caddy is missing, setup uses Caddy's official stable Debian/Ubuntu repository and the package-provided `caddy.service`. HTTPS configuration is validated before reload. Reconfiguration is transactional: the previous configuration and running services are restored if dependency installation, service startup, or local health checks fail.
+
 If UFW is active, setup opens only the selected LAN HTTP port or HTTPS port 443. It does not configure router port forwarding or expose the server publicly.
 
 ## Development

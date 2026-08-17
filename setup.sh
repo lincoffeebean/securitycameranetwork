@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 
 set -u
+set -o pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="$ROOT_DIR/.securitycam"
 CONFIG_FILE="$CONFIG_DIR/config.json"
 VENV_DIR="$ROOT_DIR/.venv"
 SERVICE_NAME="securitycameranetwork"
-SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME.service"
+SERVICE_FILE="${SECURITYCAM_SERVICE_FILE:-/etc/systemd/system/$SERVICE_NAME.service}"
+CADDY_FILE="${SECURITYCAM_CADDY_FILE:-/etc/caddy/Caddyfile}"
+CADDY_FRAGMENT="${SECURITYCAM_CADDY_FRAGMENT:-/etc/caddy/Caddyfile.d/securitycameranetwork.caddy}"
+CADDY_KEYRING="${SECURITYCAM_CADDY_KEYRING:-/usr/share/keyrings/caddy-stable-archive-keyring.gpg}"
+CADDY_SOURCE="${SECURITYCAM_CADDY_SOURCE:-/etc/apt/sources.list.d/caddy-stable.list}"
 
 info() { printf '  %s\n' "$*"; }
 ok() { printf '\n[OK] %s\n' "$*"; }
@@ -58,7 +63,7 @@ detect_lan_ip() {
 }
 
 is_debian_family() {
-    local release_file="${1:-/etc/os-release}"
+    local release_file="${1:-${SECURITYCAM_OS_RELEASE:-/etc/os-release}}"
     [[ -r "$release_file" ]] || return 1
     grep -Eiq '^(ID|ID_LIKE)=.*(debian|ubuntu)' "$release_file"
 }
@@ -159,18 +164,32 @@ prepare_virtualenv() {
 }
 
 install_python_app() {
+    local pip_log
     prepare_virtualenv
     info "Installing Python dependencies..."
-    "$VENV_DIR/bin/python" -m pip install --upgrade pip >/dev/null || fail "Could not update pip inside .venv."
-    "$VENV_DIR/bin/python" -m pip install -r "$ROOT_DIR/server/requirements.txt" || fail "Dependency installation failed."
+    if [[ "${SECURITYCAM_VERBOSE:-0}" == 1 ]]; then
+        "$VENV_DIR/bin/python" -m pip install --upgrade pip || fail "Could not update pip inside .venv."
+        "$VENV_DIR/bin/python" -m pip install -r "$ROOT_DIR/server/requirements.txt" || fail "Dependency installation failed."
+    else
+        pip_log="$(mktemp)" || fail "Could not create a temporary pip log."
+        if ! "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --quiet --upgrade pip >"$pip_log" 2>&1 \
+            || ! "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --quiet -r "$ROOT_DIR/server/requirements.txt" >>"$pip_log" 2>&1; then
+            printf '\nPython dependency installation output:\n' >&2
+            cat "$pip_log" >&2
+            rm -f "$pip_log"
+            fail "Dependency installation failed."
+        fi
+        rm -f "$pip_log"
+    fi
     ok "Python dependencies installed"
 }
 
 write_config() {
-    mkdir -p "$CONFIG_DIR" || fail "Could not create $CONFIG_DIR."
+    local output_file="${1:-$CONFIG_FILE}"
+    mkdir -p "$(dirname "$output_file")" || fail "Could not create the configuration directory."
     CONFIG_HOST="$host" CONFIG_PORT="$port" CONFIG_RECORDINGS="$recordings_path" \
     CONFIG_STORAGE="$storage_limit" CONFIG_HTTPS="$https" CONFIG_BOOT="$start_on_boot" \
-    "$VENV_DIR/bin/python" - "$CONFIG_FILE" <<'PY'
+    "$VENV_DIR/bin/python" - "$output_file" <<'PY'
 import json, os, sys
 config = {
     "host": os.environ["CONFIG_HOST"],
@@ -186,12 +205,12 @@ with open(sys.argv[1], "w", encoding="utf-8") as file:
 PY
 }
 
-install_systemd_service() {
-    command -v systemctl >/dev/null 2>&1 || fail "systemd is unavailable; choose no for start-on-boot."
-    local install_user install_group unit
+write_systemd_unit() {
+    local output_file="$1" config_path="$2" install_user install_group
     install_user="${SUDO_USER:-$(id -un)}"
     install_group="$(id -gn "$install_user")"
-    unit="[Unit]
+    cat >"$output_file" <<EOF
+[Unit]
 Description=Security Camera Network
 After=network-online.target
 Wants=network-online.target
@@ -201,35 +220,347 @@ Type=simple
 User=$install_user
 Group=$install_group
 WorkingDirectory="$ROOT_DIR"
-Environment="SECURITYCAM_CONFIG=$CONFIG_FILE"
+Environment="SECURITYCAM_CONFIG=$config_path"
 ExecStart="$ROOT_DIR/securitycam" run
 Restart=on-failure
 RestartSec=3
 
 [Install]
-WantedBy=multi-user.target"
-    printf '%s\n' "$unit" | run_root tee "$SERVICE_FILE" >/dev/null || fail "Could not install the systemd service."
-    run_root systemctl daemon-reload || fail "systemd daemon-reload failed."
-    run_root systemctl enable "$SERVICE_NAME" >/dev/null || fail "Could not enable the service."
+WantedBy=multi-user.target
+EOF
 }
 
-configure_https() {
-    if ! command -v caddy >/dev/null 2>&1; then
-        install_debian_package caddy
+install_caddy_official() {
+    local repo_tmp key_tmp source_tmp prerequisites
+    if command -v caddy >/dev/null 2>&1 && caddy version >/dev/null 2>&1; then
+        CADDY_INSTALL_COMPLETED=true
+        printf '[OK] Caddy %s\n' "$(caddy version)"
+        return
     fi
-    local caddy_config caddy_fragment
-    caddy_config="https://$lan_ip {
+
+    is_debian_family || fail "Caddy is missing. Automatic installation is supported only on Debian/Ubuntu; install Caddy for your distribution and retry."
+    command -v apt-get >/dev/null 2>&1 || fail "apt-get is unavailable; Caddy could not be installed."
+    printf '\nHTTPS requires Caddy from the official Caddy Debian repository.\n'
+    confirm "Install Caddy now?" Y || fail "HTTPS setup cancelled because Caddy is required."
+
+    prerequisites=(debian-keyring debian-archive-keyring apt-transport-https curl)
+    command -v gpg >/dev/null 2>&1 || prerequisites+=(gnupg)
+    info "Installing Caddy repository prerequisites..."
+    run_root apt-get update || fail "Could not update package information before installing Caddy prerequisites."
+    run_root apt-get install -y "${prerequisites[@]}" || fail "Could not install the prerequisites for Caddy's official repository."
+
+    if [[ ! -s "$CADDY_KEYRING" || ! -s "$CADDY_SOURCE" ]] \
+        || ! grep -qF 'dl.cloudsmith.io/public/caddy/stable' "$CADDY_SOURCE" \
+        || ! gpg --show-keys "$CADDY_KEYRING" >/dev/null 2>&1; then
+        repo_tmp="$(mktemp -d)" || fail "Could not create temporary files for the Caddy repository."
+        key_tmp="$repo_tmp/caddy-key.gpg"
+        source_tmp="$repo_tmp/caddy-stable.list"
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+            | gpg --dearmor >"$key_tmp" \
+            || { rm -rf -- "$repo_tmp"; fail "Could not download or verify the official Caddy signing key."; }
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' -o "$source_tmp" \
+            || { rm -rf -- "$repo_tmp"; fail "Could not download the official Caddy apt source."; }
+        [[ -s "$key_tmp" && -s "$source_tmp" ]] \
+            && grep -qF 'dl.cloudsmith.io/public/caddy/stable' "$source_tmp" \
+            && gpg --show-keys "$key_tmp" >/dev/null 2>&1 \
+            || { rm -rf -- "$repo_tmp"; fail "The downloaded Caddy repository files were empty or invalid."; }
+        run_root install -m 0644 "$key_tmp" "$CADDY_KEYRING" \
+            || { rm -rf -- "$repo_tmp"; fail "Could not install the Caddy signing key."; }
+        run_root install -m 0644 "$source_tmp" "$CADDY_SOURCE" \
+            || { rm -rf -- "$repo_tmp"; fail "Could not install the Caddy apt source."; }
+        rm -rf -- "$repo_tmp"
+    fi
+
+    run_root chmod o+r "$CADDY_KEYRING" "$CADDY_SOURCE" || fail "Could not set readable permissions on the Caddy repository files."
+    info "Installing Caddy..."
+    run_root apt-get update || fail "The official Caddy repository could not be refreshed."
+    run_root apt-get install -y caddy || fail "Caddy installation failed. Review the apt output above, then retry HTTPS setup."
+    command -v caddy >/dev/null 2>&1 && caddy version >/dev/null 2>&1 \
+        || fail "Caddy was installed but 'caddy version' failed."
+    CADDY_INSTALL_COMPLETED=true
+    ok "Caddy $(caddy version) installed"
+}
+
+write_caddy_fragment() {
+    local output_file="$1"
+    cat >"$output_file" <<EOF
+https://$lan_ip {
     tls internal
     reverse_proxy 127.0.0.1:$port
-}"
-    caddy_fragment="/etc/caddy/Caddyfile.d/securitycameranetwork.caddy"
-    run_root mkdir -p /etc/caddy/Caddyfile.d
-    printf '%s\n' "$caddy_config" | run_root tee "$caddy_fragment" >/dev/null || fail "Could not write the Caddy configuration."
-    if ! run_root grep -qF 'import Caddyfile.d/*.caddy' /etc/caddy/Caddyfile; then
-        printf '\nimport Caddyfile.d/*.caddy\n' | run_root tee -a /etc/caddy/Caddyfile >/dev/null
+}
+EOF
+}
+
+config_value_from() {
+    python3 - "$1" "$2" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as file:
+    value = json.load(file).get(sys.argv[2], "")
+print(str(value).lower() if isinstance(value, bool) else value)
+PY
+}
+
+config_address() {
+    local source_file="$1" scheme config_port
+    [[ -f "$source_file" ]] || return 1
+    [[ "$(config_value_from "$source_file" https)" == true ]] && scheme=https || scheme=http
+    config_port="$(config_value_from "$source_file" port)"
+    if [[ "$scheme" == https ]]; then
+        printf 'https://%s' "$lan_ip"
+    else
+        printf 'http://%s:%s' "$lan_ip" "$config_port"
     fi
-    run_root systemctl enable --now caddy >/dev/null || fail "Could not start Caddy."
-    run_root systemctl reload caddy || fail "Could not reload Caddy."
+}
+
+TRANSACTION_ACTIVE=false
+TRANSACTION_DIR=""
+PENDING_CONFIG=""
+PREVIOUS_CONFIG_EXISTS=false
+PREVIOUS_SERVICE_EXISTS=false
+PREVIOUS_SERVICE_ENABLED=false
+PREVIOUS_RUNNING=false
+PREVIOUS_CADDY_FILE_EXISTS=false
+PREVIOUS_CADDY_FRAGMENT_EXISTS=false
+PREVIOUS_CADDY_ACTIVE=false
+PREVIOUS_CADDY_AVAILABLE=false
+PREVIOUS_CADDY_KEY_EXISTS=false
+PREVIOUS_CADDY_SOURCE_EXISTS=false
+CADDY_INSTALL_COMPLETED=false
+PREVIOUS_ADDRESS=""
+CUTOVER_STARTED=false
+
+begin_transaction() {
+    mkdir -p "$CONFIG_DIR" || fail "Could not create $CONFIG_DIR."
+    TRANSACTION_DIR="$(mktemp -d "$CONFIG_DIR/transaction.XXXXXX")" || fail "Could not create a setup transaction."
+    PENDING_CONFIG="$TRANSACTION_DIR/config.pending.json"
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        PREVIOUS_CONFIG_EXISTS=true
+        cp "$CONFIG_FILE" "$TRANSACTION_DIR/config.previous.json" || fail "Could not preserve the current configuration."
+        PREVIOUS_ADDRESS="$(config_address "$CONFIG_FILE")"
+    fi
+    if [[ -f "$SERVICE_FILE" ]]; then
+        PREVIOUS_SERVICE_EXISTS=true
+        run_root cat "$SERVICE_FILE" >"$TRANSACTION_DIR/service.previous" || fail "Could not preserve the current systemd service."
+        systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null && PREVIOUS_SERVICE_ENABLED=true
+    fi
+    if [[ -f "$CADDY_FILE" ]]; then
+        PREVIOUS_CADDY_FILE_EXISTS=true
+        run_root cat "$CADDY_FILE" >"$TRANSACTION_DIR/Caddyfile.previous" || fail "Could not preserve the current Caddyfile."
+    fi
+    if [[ -f "$CADDY_FRAGMENT" ]]; then
+        PREVIOUS_CADDY_FRAGMENT_EXISTS=true
+        run_root cat "$CADDY_FRAGMENT" >"$TRANSACTION_DIR/caddy-fragment.previous" || fail "Could not preserve the current Caddy configuration."
+    fi
+    if [[ -f "$CADDY_KEYRING" ]]; then
+        PREVIOUS_CADDY_KEY_EXISTS=true
+        run_root cat "$CADDY_KEYRING" >"$TRANSACTION_DIR/caddy-key.previous" || fail "Could not preserve the current Caddy signing key."
+    fi
+    if [[ -f "$CADDY_SOURCE" ]]; then
+        PREVIOUS_CADDY_SOURCE_EXISTS=true
+        run_root cat "$CADDY_SOURCE" >"$TRANSACTION_DIR/caddy-source.previous" || fail "Could not preserve the current Caddy apt source."
+    fi
+    if command -v caddy >/dev/null 2>&1 && caddy version >/dev/null 2>&1; then
+        PREVIOUS_CADDY_AVAILABLE=true
+    fi
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet caddy 2>/dev/null; then
+        PREVIOUS_CADDY_ACTIVE=true
+    fi
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+        PREVIOUS_RUNNING=true
+    elif [[ "$PREVIOUS_CONFIG_EXISTS" == true ]] \
+        && SECURITYCAM_CONFIG="$CONFIG_FILE" "$ROOT_DIR/securitycam" status 2>/dev/null | grep -q 'Status:  Running'; then
+        PREVIOUS_RUNNING=true
+    fi
+
+    TRANSACTION_ACTIVE=true
+    trap rollback_transaction EXIT
+}
+
+restore_caddy_files() {
+    if [[ "$PREVIOUS_CADDY_FILE_EXISTS" == true ]]; then
+        run_root install -m 0644 "$TRANSACTION_DIR/Caddyfile.previous" "$CADDY_FILE" || true
+    elif [[ -f "$TRANSACTION_DIR/Caddyfile.installed-default" ]]; then
+        run_root install -m 0644 "$TRANSACTION_DIR/Caddyfile.installed-default" "$CADDY_FILE" || true
+    fi
+    if [[ "$PREVIOUS_CADDY_FRAGMENT_EXISTS" == true ]]; then
+        run_root mkdir -p "$(dirname "$CADDY_FRAGMENT")" || true
+        run_root install -m 0644 "$TRANSACTION_DIR/caddy-fragment.previous" "$CADDY_FRAGMENT" || true
+    else
+        run_root rm -f "$CADDY_FRAGMENT" || true
+    fi
+    if [[ "$CADDY_INSTALL_COMPLETED" == false ]]; then
+        if [[ "$PREVIOUS_CADDY_KEY_EXISTS" == true ]]; then
+            run_root install -m 0644 "$TRANSACTION_DIR/caddy-key.previous" "$CADDY_KEYRING" || true
+        else
+            run_root rm -f "$CADDY_KEYRING" || true
+        fi
+        if [[ "$PREVIOUS_CADDY_SOURCE_EXISTS" == true ]]; then
+            run_root install -m 0644 "$TRANSACTION_DIR/caddy-source.previous" "$CADDY_SOURCE" || true
+        else
+            run_root rm -f "$CADDY_SOURCE" || true
+        fi
+    fi
+}
+
+rollback_transaction() {
+    local status=$? restored_running=false
+    trap - EXIT
+    [[ "$TRANSACTION_ACTIVE" == true ]] || exit "$status"
+    set +e
+
+    if [[ "$CUTOVER_STARTED" == true ]]; then
+        command -v systemctl >/dev/null 2>&1 && run_root systemctl stop "$SERVICE_NAME" >/dev/null 2>&1
+        if [[ -f "$ROOT_DIR/.securitycam/server.pid" ]]; then
+            SECURITYCAM_CONFIG="${PENDING_CONFIG:-$CONFIG_FILE}" "$ROOT_DIR/securitycam" stop >/dev/null 2>&1
+        fi
+    fi
+
+    if [[ "$PREVIOUS_CONFIG_EXISTS" == true ]]; then
+        cp "$TRANSACTION_DIR/config.previous.json" "$CONFIG_FILE"
+    else
+        rm -f "$CONFIG_FILE"
+    fi
+
+    if [[ "$PREVIOUS_SERVICE_EXISTS" == true ]]; then
+        run_root install -m 0644 "$TRANSACTION_DIR/service.previous" "$SERVICE_FILE"
+    else
+        run_root rm -f "$SERVICE_FILE"
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        run_root systemctl daemon-reload >/dev/null 2>&1
+        if [[ "$PREVIOUS_SERVICE_ENABLED" == true ]]; then
+            run_root systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
+        else
+            run_root systemctl disable "$SERVICE_NAME" >/dev/null 2>&1
+        fi
+    fi
+
+    restore_caddy_files
+    if command -v systemctl >/dev/null 2>&1; then
+        if [[ "$PREVIOUS_CADDY_ACTIVE" == true ]]; then
+            run_root systemctl restart caddy >/dev/null 2>&1
+        else
+            run_root systemctl stop caddy >/dev/null 2>&1
+        fi
+    fi
+
+    if [[ "$PREVIOUS_RUNNING" == true && "$PREVIOUS_CONFIG_EXISTS" == true ]]; then
+        SECURITYCAM_CONFIG="$CONFIG_FILE" "$ROOT_DIR/securitycam" start >/dev/null 2>&1
+        if SECURITYCAM_CONFIG="$CONFIG_FILE" "$ROOT_DIR/securitycam" status 2>/dev/null | grep -q 'Status:  Running'; then
+            restored_running=true
+        fi
+    fi
+
+    rm -rf -- "$TRANSACTION_DIR"
+    if [[ "$PREVIOUS_CONFIG_EXISTS" == true ]]; then
+        printf '\nYour previous configuration has been restored.\n' >&2
+        if [[ "$repair" == true && "$(config_value_from "$CONFIG_FILE" https)" == true && "$PREVIOUS_CADDY_AVAILABLE" == false ]]; then
+            printf 'HTTPS remains unavailable because Caddy could not be restored.\n' >&2
+        elif [[ "$PREVIOUS_RUNNING" == true && "$restored_running" == true ]]; then
+            printf '\nSecurity Camera Network is still available at:\n%s\n' "$PREVIOUS_ADDRESS" >&2
+        elif [[ "$PREVIOUS_RUNNING" == true ]]; then
+            printf 'The previous configuration was restored, but the server could not be restarted automatically. Run ./securitycam start.\n' >&2
+        fi
+    else
+        printf '\nSetup failed before a configuration was activated.\n' >&2
+    fi
+    exit "$status"
+}
+
+prepare_caddy_candidate() {
+    local candidate_dir="$TRANSACTION_DIR/caddy" candidate_file="$TRANSACTION_DIR/caddy/Caddyfile"
+    mkdir -p "$candidate_dir/Caddyfile.d" || fail "Could not prepare the Caddy configuration."
+    if [[ -f "$CADDY_FILE" ]]; then
+        if [[ "$PREVIOUS_CADDY_FILE_EXISTS" == false && ! -f "$TRANSACTION_DIR/Caddyfile.installed-default" ]]; then
+            run_root cat "$CADDY_FILE" >"$TRANSACTION_DIR/Caddyfile.installed-default" \
+                || fail "Could not preserve Caddy's package configuration."
+        fi
+        run_root cat "$CADDY_FILE" >"$candidate_file" || fail "Could not read the current Caddyfile."
+    else
+        : >"$candidate_file"
+    fi
+    if [[ -d "$(dirname "$CADDY_FRAGMENT")" ]]; then
+        run_root cp -a "$(dirname "$CADDY_FRAGMENT")/." "$candidate_dir/Caddyfile.d/" \
+            || fail "Could not copy the current Caddy configuration."
+        run_root chown -R "$(id -u):$(id -g)" "$candidate_dir" \
+            || fail "Could not prepare writable Caddy validation files."
+    fi
+    run_root rm -f "$candidate_dir/Caddyfile.d/$(basename "$CADDY_FRAGMENT")"
+    if ! grep -qF 'import Caddyfile.d/*.caddy' "$candidate_file"; then
+        printf '\nimport Caddyfile.d/*.caddy\n' >>"$candidate_file"
+    fi
+    if [[ "$https" == true ]]; then
+        write_caddy_fragment "$candidate_dir/Caddyfile.d/$(basename "$CADDY_FRAGMENT")"
+    fi
+    if ! (cd "$candidate_dir" && caddy validate --config Caddyfile --adapter caddyfile); then
+        fail "The generated Caddy configuration is invalid; it was not applied."
+    fi
+    ok "Caddy configuration validated"
+}
+
+apply_caddy_candidate() {
+    local candidate_dir="$TRANSACTION_DIR/caddy"
+    [[ -d "$candidate_dir" ]] || return
+    run_root mkdir -p "$(dirname "$CADDY_FRAGMENT")" || fail "Could not create the Caddy configuration directory."
+    run_root install -m 0644 "$candidate_dir/Caddyfile" "$CADDY_FILE" || fail "Could not apply the Caddyfile."
+    if [[ "$https" == true ]]; then
+        run_root install -m 0644 "$candidate_dir/Caddyfile.d/$(basename "$CADDY_FRAGMENT")" "$CADDY_FRAGMENT" \
+            || fail "Could not apply the Security Camera Network Caddy configuration."
+        run_root systemctl enable --now caddy >/dev/null || fail "The official Caddy service could not be started."
+    else
+        run_root rm -f "$CADDY_FRAGMENT" || fail "Could not remove the previous HTTPS configuration."
+    fi
+    run_root systemctl reload caddy || fail "Caddy could not reload the validated configuration."
+}
+
+validate_systemd_unit() {
+    local unit_file="$1" verify_log="$TRANSACTION_DIR/systemd-verify.log"
+    command -v systemd-analyze >/dev/null 2>&1 || return
+    if ! systemd-analyze verify "$unit_file" >"$verify_log" 2>&1; then
+        cat "$verify_log" >&2
+        fail "The generated systemd service is invalid; it was not applied."
+    fi
+}
+
+wait_for_health() {
+    local attempts=20
+    while ((attempts > 0)); do
+        if "$VENV_DIR/bin/python" - "$port" <<'PY' >/dev/null 2>&1
+import json, sys, urllib.request
+with urllib.request.urlopen(f"http://127.0.0.1:{sys.argv[1]}/health", timeout=1) as response:
+    raise SystemExit(response.status != 200 or json.load(response).get("status") != "online")
+PY
+        then
+            if [[ "$https" != true ]] || "$VENV_DIR/bin/python" - "$lan_ip" <<'PY' >/dev/null 2>&1
+import json, ssl, sys, urllib.request
+context = ssl._create_unverified_context()
+with urllib.request.urlopen(f"https://{sys.argv[1]}/health", context=context, timeout=1) as response:
+    raise SystemExit(response.status != 200 or json.load(response).get("status") != "online")
+PY
+            then
+                ok "Local health check passed"
+                return
+            fi
+        fi
+        sleep 0.5
+        attempts=$((attempts - 1))
+    done
+    fail "The new configuration failed its local health check."
+}
+
+finish_transaction() {
+    local final_unit="$TRANSACTION_DIR/securitycameranetwork.final.service"
+    mv -f "$PENDING_CONFIG" "$CONFIG_FILE" || fail "Could not activate the validated configuration."
+    if [[ "$start_on_boot" == true ]]; then
+        write_systemd_unit "$final_unit" "$CONFIG_FILE"
+        validate_systemd_unit "$final_unit"
+        run_root install -m 0644 "$final_unit" "$SERVICE_FILE" || fail "Could not finalize the systemd service."
+        run_root systemctl daemon-reload || fail "systemd could not load the finalized service."
+    fi
+    TRANSACTION_ACTIVE=false
+    trap - EXIT
+    rm -rf -- "$TRANSACTION_DIR"
 }
 
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
@@ -321,37 +652,63 @@ fi
 
 install_python_app
 
-if [[ -f "$CONFIG_FILE" ]]; then
-    "$ROOT_DIR/securitycam" stop >/dev/null 2>&1 || true
-fi
-if command -v ss >/dev/null 2>&1 && ss -H -ltn "sport = :$port" 2>/dev/null | grep -q .; then
-    fail "Port $port is already in use. Run ./setup.sh and choose another port."
-fi
-
 mkdir -p "$recordings_path" || fail "The recordings directory could not be created: $recordings_path"
-write_config
+begin_transaction
+write_config "$PENDING_CONFIG"
 
 (
-    cd "$ROOT_DIR/server" && SECURITYCAM_CONFIG="$CONFIG_FILE" "$VENV_DIR/bin/python" -c 'from app.main import app'
+    cd "$ROOT_DIR/server" && SECURITYCAM_CONFIG="$PENDING_CONFIG" "$VENV_DIR/bin/python" -c 'from app.main import app'
 ) || fail "FastAPI application validation failed."
 
 if [[ "$start_on_boot" == true ]]; then
-    install_systemd_service
-elif [[ -f "$SERVICE_FILE" ]]; then
-    run_root systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
-    run_root rm -f "$SERVICE_FILE"
-    run_root systemctl daemon-reload
+    write_systemd_unit "$TRANSACTION_DIR/securitycameranetwork.pending.service" "$PENDING_CONFIG"
+    validate_systemd_unit "$TRANSACTION_DIR/securitycameranetwork.pending.service"
 fi
 
 if [[ "$https" == true ]]; then
     [[ "$lan_ip" != "LAN-IP-NOT-DETECTED" ]] || fail "HTTPS setup needs a detected LAN IP."
-    configure_https
-elif [[ -f /etc/caddy/Caddyfile.d/securitycameranetwork.caddy ]]; then
-    run_root rm -f /etc/caddy/Caddyfile.d/securitycameranetwork.caddy
-    run_root systemctl reload caddy >/dev/null 2>&1 || true
+    install_caddy_official
+    prepare_caddy_candidate
+elif [[ -f "$CADDY_FRAGMENT" ]]; then
+    command -v caddy >/dev/null 2>&1 && caddy version >/dev/null 2>&1 \
+        || fail "The existing HTTPS configuration cannot be removed safely because Caddy is unavailable."
+    prepare_caddy_candidate
 fi
 
-"$ROOT_DIR/securitycam" restart || fail "The server could not start. Check: ./securitycam logs"
+previous_port=""
+[[ "$PREVIOUS_CONFIG_EXISTS" == false ]] || previous_port="$(config_value_from "$CONFIG_FILE" port)"
+if command -v ss >/dev/null 2>&1 \
+    && ss -H -ltn "sport = :$port" 2>/dev/null | grep -q . \
+    && [[ "$PREVIOUS_RUNNING" == false || "$port" != "$previous_port" ]]; then
+    fail "Port $port is already in use. The proposed configuration was not applied."
+fi
+
+CUTOVER_STARTED=true
+if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    run_root systemctl stop "$SERVICE_NAME" || fail "Could not stop the current server for reconfiguration."
+elif [[ "$PREVIOUS_RUNNING" == true && "$PREVIOUS_CONFIG_EXISTS" == true ]]; then
+    SECURITYCAM_CONFIG="$CONFIG_FILE" "$ROOT_DIR/securitycam" stop || fail "Could not stop the current server for reconfiguration."
+fi
+
+if [[ "$start_on_boot" == true ]]; then
+    run_root install -m 0644 "$TRANSACTION_DIR/securitycameranetwork.pending.service" "$SERVICE_FILE" \
+        || fail "Could not stage the systemd service."
+    run_root systemctl daemon-reload || fail "systemd could not load the staged service."
+    run_root systemctl enable "$SERVICE_NAME" >/dev/null || fail "Could not enable the staged service."
+    run_root systemctl start "$SERVICE_NAME" || fail "The staged FastAPI service could not start."
+else
+    if [[ -f "$SERVICE_FILE" ]]; then
+        run_root systemctl disable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
+        run_root rm -f "$SERVICE_FILE" || fail "Could not remove the previous systemd service."
+        run_root systemctl daemon-reload || fail "systemd could not apply the service change."
+    fi
+    SECURITYCAM_CONFIG="$PENDING_CONFIG" "$ROOT_DIR/securitycam" start \
+        || fail "The staged FastAPI server could not start."
+fi
+
+apply_caddy_candidate
+wait_for_health
+finish_transaction
 
 if command -v ufw >/dev/null 2>&1 && run_root ufw status 2>/dev/null | grep -q '^Status: active'; then
     if [[ "$https" == true ]]; then
